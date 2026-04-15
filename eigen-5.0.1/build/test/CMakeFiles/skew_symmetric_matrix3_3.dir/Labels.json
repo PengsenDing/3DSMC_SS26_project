@@ -1,0 +1,16 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/eigen-5.0.1/test/skew_symmetric_matrix3.cpp"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"BuildOfficial"
+		],
+		"name" : "skew_symmetric_matrix3_3"
+	}
+}

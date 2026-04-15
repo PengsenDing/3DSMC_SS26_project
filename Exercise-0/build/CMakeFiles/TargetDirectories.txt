@@ -1,0 +1,4 @@
+/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/Exercise-0/build/CMakeFiles/lib.dir
+/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/Exercise-0/build/CMakeFiles/app.dir
+/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/Exercise-0/build/CMakeFiles/edit_cache.dir
+/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/Exercise-0/build/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,16 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/eigen-5.0.1/test/diagonal_matrix_variadic_ctor.cpp"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"BuildOfficial"
+		],
+		"name" : "diagonal_matrix_variadic_ctor_2"
+	}
+}
