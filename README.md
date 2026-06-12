@@ -1,93 +1,142 @@
 # Face Reconstruction
 
+Classical optimization based face reconstruction project for the IN2354 3D Scanning and Motion Capture course.
 
+The first project milestone is to set up a working C++ project and prepare the dependencies needed to load and display a face model without lighting.
 
-## Getting started
+## Current Status
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Week 1 setup is in place:
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- CMake based C++20 project skeleton.
+- `face_reconstruction_core` library target for reusable project code.
+- `face_reconstruction` executable target for demos and smoke tests.
+- Dependencies discovered and linked through CMake.
+- OBJ mesh loading with triangulation for polygon faces.
+- Unlit OpenGL/SFML mesh viewer with basic camera controls.
+- A small sample face-like OBJ mesh in `data/model.obj`.
 
-## Add your files
+## Week 1 Progress
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+The Week 1 goal was project setup plus face model loading and display without lighting. The current implementation completes that goal with a minimal but working pipeline:
 
+1. CMake configures and builds the project.
+2. The executable loads an OBJ mesh from disk.
+3. The loader prints mesh statistics for quick verification.
+4. The viewer displays the loaded mesh with unlit OpenGL rendering.
+5. A placeholder face-like OBJ is included so the demo works before the real Basel Face Model export is available.
+
+## Dependencies
+
+The project currently links the dependencies needed for the planned reconstruction pipeline:
+
+- Eigen 3.4.0: matrix/vector math and linear algebra.
+- OpenCV 4.11.0: image loading, image processing, and later RGB/RGB-D input handling.
+- Ceres Solver 2.2.0: nonlinear least squares optimization for later alignment and model fitting.
+- OpenGL: rendering backend for the week-1 face model viewer.
+- GLEW 2.2.0 package: OpenGL extension loading. The installed headers report 2.3.4.
+- SFML 3.0.2: window creation and OpenGL context management.
+
+GLFW is not currently installed on this machine, so SFML is used as the window/context layer.
+
+## Build
+
+From the repository root:
+
+```bash
+cmake -S . -B build
+cmake --build build
 ```
-cd existing_repo
-git remote add origin https://gitlab.lrz.de/3dsmc-group-5/face-reconstruction.git
-git branch -M main
-git push -uf origin main
+
+## Run Dependency Smoke Test
+
+```bash
+./build/face_reconstruction --deps
 ```
 
-## Integrate with your tools
+Expected output:
 
-* [Set up project integrations](https://gitlab.lrz.de/3dsmc-group-5/face-reconstruction/-/settings/integrations)
+```text
+Face Reconstruction project skeleton
+C++ target: C++20
+Eigen: 3.4.0 (identity trace = 3)
+OpenCV: 4.11.0
+Ceres Solver: 2.2.0
+GLEW headers: 2.3.4
+SFML: 3.0.2
+OpenGL: linked through CMake OpenGL::GL
+```
 
-## Collaborate with your team
+The executable may take a few seconds on first run while dynamic libraries are loaded.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Load Mesh Without Opening a Window
 
-## Test and Deploy
+```bash
+./build/face_reconstruction data/model.obj --info
+```
 
-Use the built-in continuous integration in GitLab.
+This verifies the OBJ loader and prints mesh statistics.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Open the Week 1 Viewer
 
-***
+```bash
+./build/face_reconstruction data/model.obj
+```
 
-# Editing this README
+Viewer controls:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+- Left drag: rotate.
+- Right or middle drag: pan.
+- Mouse wheel: zoom.
+- `R`: reset camera.
+- `Esc`: close.
 
-## Suggestions for a good README
+For an automated viewer smoke test that opens the viewer, renders one frame, and exits:
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```bash
+./build/face_reconstruction data/model.obj --frames 1
+```
 
-## Name
-Choose a self-explaining name for your project.
+## Project Layout
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```text
+.
+├── CMakeLists.txt
+├── data/
+│   └── model.obj
+├── include/
+│   └── face_reconstruction/
+│       ├── app.hpp
+│       ├── mesh.hpp
+│       ├── obj_loader.hpp
+│       └── viewer.hpp
+├── src/
+│   ├── app.cpp
+│   ├── mesh.cpp
+│   ├── obj_loader.cpp
+│   ├── viewer.cpp
+│   └── main.cpp
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## File Overview
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- `CMakeLists.txt`: defines the C++20 project, finds dependencies, builds the core library, and builds the executable.
+- `include/face_reconstruction/app.hpp`: declares the top-level application functions.
+- `src/app.cpp`: handles command-line options, loads meshes, prints dependency/mesh info, and starts the viewer.
+- `src/main.cpp`: small program entry point with error handling.
+- `include/face_reconstruction/mesh.hpp`: defines the `Mesh` and `Triangle` data structures.
+- `src/mesh.cpp`: implements mesh helper functions such as center, extent, bounding radius, and summary output.
+- `include/face_reconstruction/obj_loader.hpp`: declares the OBJ loading function.
+- `src/obj_loader.cpp`: reads OBJ files, parses vertices/faces, supports common OBJ face formats, and triangulates polygon faces.
+- `include/face_reconstruction/viewer.hpp`: declares viewer options and the viewer entry point.
+- `src/viewer.cpp`: creates the SFML/OpenGL window, renders the mesh without lighting, and implements rotate/pan/zoom controls.
+- `data/model.obj`: low-poly placeholder face mesh for the Week 1 demo.
+- `.gitignore`: keeps generated build files out of version control.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## Replacing the Placeholder Mesh
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+`data/model.obj` is only a low-poly placeholder. Once the Basel Face Model data is available, convert/export a neutral face mesh to OBJ and replace the file or pass the exported path explicitly:
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+```bash
+./build/face_reconstruction path/to/neutral_face.obj
+```
