@@ -37,7 +37,7 @@ We use a standard standard CMake out-of-source build pipeline. Run the following
 
 ```console
 # 1. Configure the project 
-# This step automatically links the local /libs and pulls down HighFive/CLI11
+# This step automatically links the local libs/ folder and pulls down HighFive/CLI11
 cmake -S . -B build
 
 # 2. Compile the target executable using all available CPU cores
@@ -74,6 +74,7 @@ Run the code directly with:
 
     -o, --output <dir> Specifies the target destination folder where generated PLY meshes, tracking snapshots, and output logs will be written. (Defaults to `results/`).
 
+---
 
 ## Getting started
 
