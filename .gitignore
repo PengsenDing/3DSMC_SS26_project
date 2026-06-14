@@ -1,0 +1,14 @@
+# Ignore the entire build directory (compiled binaries, object files, Ninja files)
+build/
+.cache/
+# Ignore data folder
+data/
+# Ignore results folder
+results/
+# Ignore the libraries folders
+libs/
+# VSCode clutter
+.vscode/
+# Ignore OS-specific clutter
+.DS_Store
+Thumbs.db
