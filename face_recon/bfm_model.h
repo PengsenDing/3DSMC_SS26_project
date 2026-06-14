@@ -43,15 +43,10 @@ class BfmModel {
   // Returns true on successful configuration, false if file reading fails.
   bool LoadFromH5(const std::string& filepath);
 
-  // Writes the statistical mean mesh to disk as an ASCII PLY file.
-  // The exported mesh includes coordinates and raw vertex albedo RGB colors.
+  // Writes the statistical mean face mesh to disk as an ASCII PLY file.
+  // The exported mesh includes coordinates, raw vertex albedo RGB colors and 3D octagonal landmark glyphs if desired.
   // Returns true if the file was written successfully.
-  bool SaveMeanMeshToPly(const std::string& filename) const;
-
-  // Exports the mean face mesh combined with 3D octagonal glyphs that visually
-  // highlight the exact spatial locations of the loaded landmark points.
-  // Returns true if the file was written successfully.
-  bool SaveMeanMeshWithLandmarksToPly(const std::string& filename) const;
+  bool SaveMeanMeshToPly(const std::string& filename, const bool include_landmarks) const;
 
   // Exports a simple text file listing landmark names and their corresponding vertex indices.
   bool SaveLandmarksToTxt(const std::string& filename) const;
@@ -67,6 +62,15 @@ class BfmModel {
   const Eigen::MatrixXi& triangles() const { return triangles_; }
   const Eigen::MatrixXd& points() const { return points_; }
   const std::map<std::string, int>& landmarks() const { return landmarks_; }
+
+  // Mutators (Setters).
+  void set_shape(const PcaComponent& shape) { shape_ = shape; }
+  void set_expression(const PcaComponent& expression) { expression_ = expression; }
+  void set_color(const PcaComponent& color) { color_ = color; }
+  void set_color_space(const std::string& color_space) { color_space_ = color_space; }
+  void set_triangles(const Eigen::MatrixXi& triangles) { triangles_ = triangles; }
+  void set_points(const Eigen::MatrixXd& points) { points_ = points; }
+  void set_landmarks(const std::map<std::string, int>& landmarks) { landmarks_ = landmarks; }
 
  private:
   // Resolves semantic landmark string keys to exact mesh vertex indices by

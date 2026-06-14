@@ -178,94 +178,7 @@ void BfmModel::PrintModelSummary() const {
   std::cout << "==================================================\n";
 }
 
-bool BfmModel::SaveMeanMeshToPly(const std::string& filename) const {
-  // Ensure core data arrays are populated before processing.
-  if (shape_.mean.size() == 0 || color_.mean.size() == 0) {
-    std::cerr << "[ERROR] Cannot export PLY. Shape or Albedo arrays are empty.\n";
-    return false;
-  }
-
-  std::ofstream ply_file(filename);
-  if (!ply_file.is_open()) {
-    std::cerr << "[ERROR] Failed to open destination path for PLY: " << filename << "\n";
-    return false;
-  }
-
-  const int num_vertices = shape_.mean.size() / 3;
-  
-  // Handle different cell matrix orientations safely (Nx3 vs 3xN).
-  int num_faces = 0;
-  bool is_row_per_face = true;
-  if (triangles_.cols() == 3) {
-    num_faces = triangles_.rows();
-    is_row_per_face = true;
-  } else if (triangles_.rows() == 3) {
-    num_faces = triangles_.cols();
-    is_row_per_face = false;
-  } else {
-    std::cerr << "[ERROR] Invalid triangle matrix layout footprint.\n";
-    return false;
-  }
-
-  // Stream compliant PLY Header configuration .
-  ply_file << "ply\n";
-  ply_file << "format ascii 1.0\n";
-  ply_file << "element vertex " << num_vertices << "\n";
-  ply_file << "property float x\n";
-  ply_file << "property float y\n";
-  ply_file << "property float z\n";
-  ply_file << "property uchar red\n";
-  ply_file << "property uchar green\n";
-  ply_file << "property uchar blue\n";
-  ply_file << "element face " << num_faces << "\n";
-  ply_file << "property list uchar int vertex_indices\n";
-  ply_file << "end_header\n";
-
-  // Auto-scale factor detection for color matrices.
-  // Basel assets vary between float values [0,1] and [0,255].
-  double max_color_val = color_.mean.maxCoeff();
-  double color_scale = (max_color_val <= 1.05) ? 255.0 : 1.0;
-
-  // Stream structural vertex block (Position + Albedo RGB mapping).
-  for (int i = 0; i < num_vertices; ++i) {
-    double x = shape_.mean(3 * i + 0);
-    double y = shape_.mean(3 * i + 1);
-    double z = shape_.mean(3 * i + 2);
-
-    // Unpack color channels matching shape structural logic.
-    double r = color_.mean(3 * i + 0) * color_scale;
-    double g = color_.mean(3 * i + 1) * color_scale;
-    double b = color_.mean(3 * i + 2) * color_scale;
-
-    // Clamp bounds safely into valid 8-bit unsigned bounds.
-    int r_int = std::clamp(static_cast<int>(r), 0, 255);
-    int g_int = std::clamp(static_cast<int>(g), 0, 255);
-    int b_int = std::clamp(static_cast<int>(b), 0, 255);
-
-    ply_file << x << " " << y << " " << z << " " << r_int << " " << g_int << " " << b_int << "\n";
-  }
-
-  // Stream indexing topology block.
-  for (int i = 0; i < num_faces; ++i) {
-    int idx0, idx1, idx2;
-    if (is_row_per_face) {
-      idx0 = triangles_(i, 0);
-      idx1 = triangles_(i, 1);
-      idx2 = triangles_(i, 2);
-    } else {
-      idx0 = triangles_(0, i);
-      idx1 = triangles_(1, i);
-      idx2 = triangles_(2, i);
-    }
-    ply_file << "3 " << idx0 << " " << idx1 << " " << idx2 << "\n";
-  }
-
-  ply_file.close();
-  std::cout << "[SUCCESS] Exported mean face texture mesh to: " << filename << "\n";
-  return true;
-}
-
-bool BfmModel::SaveMeanMeshWithLandmarksToPly(const std::string& filename) const {
+bool BfmModel::SaveMeanMeshToPly(const std::string& filename, const bool include_landmarks) const {
   if (shape_.mean.size() == 0 || color_.mean.size() == 0) {
     std::cerr << "[ERROR] Mesh data arrays are uninitialized.\n";
     return false;
@@ -282,9 +195,9 @@ bool BfmModel::SaveMeanMeshWithLandmarksToPly(const std::string& filename) const
   int base_faces = (triangles_.cols() == 3) ? triangles_.rows() : triangles_.cols();
   const bool is_row_per_face = (triangles_.cols() == 3);
 
-  // Account for our 3D Landmark Glyphs (Octahedrons).
+  // Account for our 3D Landmark Glyphs (Octahedrons) if needed.
   // Each tracking anchor adds 6 vertices and 8 triangular faces.
-  const int num_landmarks = landmarks_.size();
+  const int num_landmarks = include_landmarks ? static_cast<int>(landmarks_.size()) : 0;
   const int total_vertices = base_vertices + (num_landmarks * 6);
   const int total_faces = base_faces + (num_landmarks * 8);
 
@@ -309,11 +222,12 @@ bool BfmModel::SaveMeanMeshWithLandmarksToPly(const std::string& filename) const
   double max_color_val = color_.mean.maxCoeff();
   double color_scale = (max_color_val <= 1.05) ? 255.0 : 1.0;
 
-  // Stream Original Face Vertices (with Mean Albedo Texturing).
+  // Stream Mean Face Vertices (with Mean Albedo Texturing).
+  Eigen::VectorXd base_face_mean = shape_.mean + expression_.mean;
   for (int i = 0; i < base_vertices; ++i) {
-    double x = shape_.mean(3 * i + 0);
-    double y = shape_.mean(3 * i + 1);
-    double z = shape_.mean(3 * i + 2);
+    double x = base_face_mean(3 * i + 0);
+    double y = base_face_mean(3 * i + 1);
+    double z = base_face_mean(3 * i + 2);
 
     int r = std::clamp(static_cast<int>(color_.mean(3 * i + 0) * color_scale), 0, 255);
     int g = std::clamp(static_cast<int>(color_.mean(3 * i + 1) * color_scale), 0, 255);
@@ -322,20 +236,22 @@ bool BfmModel::SaveMeanMeshWithLandmarksToPly(const std::string& filename) const
     ply_file << x << " " << y << " " << z << " " << r << " " << g << " " << b << "\n";
   }
 
-  // Stream Landmark Glyph Vertices (Pure Red: 255, 0, 0).
-  for (const auto& [name, vertex_idx] : landmarks_) {
-    // Extract the exact 3D location of this anchor point on the mean face.
-    double cx = shape_.mean(3 * vertex_idx + 0);
-    double cy = shape_.mean(3 * vertex_idx + 1);
-    double cz = shape_.mean(3 * vertex_idx + 2);
+  // Stream Landmark Glyph Vertices if needed (Pure Red: 255, 0, 0).
+  if (include_landmarks) {
+    for (const auto& [name, vertex_idx] : landmarks_) {
+      // Extract the exact 3D location of this anchor point on the mean face.
+      double cx = base_face_mean(3 * vertex_idx + 0);
+      double cy = base_face_mean(3 * vertex_idx + 1);
+      double cz = base_face_mean(3 * vertex_idx + 2);
 
-    // Generate 6 cross tips floating around the center point.
-    ply_file << (cx + glyph_size) << " " << cy << " " << cz << " 255 0 0\n"; // Right
-    ply_file << (cx - glyph_size) << " " << cy << " " << cz << " 255 0 0\n"; // Left
-    ply_file << cx << " " << (cy + glyph_size) << " " << cz << " 255 0 0\n"; // Up
-    ply_file << cx << " " << (cy - glyph_size) << " " << cz << " 255 0 0\n"; // Down
-    ply_file << cx << " " << cy << " " << (cz + glyph_size) << " 255 0 0\n"; // Forward
-    ply_file << cx << " " << cy << " " << (cz - glyph_size) << " 255 0 0\n"; // Backward
+      // Generate 6 cross tips floating around the center point.
+      ply_file << (cx + glyph_size) << " " << cy << " " << cz << " 255 0 0\n"; // Right
+      ply_file << (cx - glyph_size) << " " << cy << " " << cz << " 255 0 0\n"; // Left
+      ply_file << cx << " " << (cy + glyph_size) << " " << cz << " 255 0 0\n"; // Up
+      ply_file << cx << " " << (cy - glyph_size) << " " << cz << " 255 0 0\n"; // Down
+      ply_file << cx << " " << cy << " " << (cz + glyph_size) << " 255 0 0\n"; // Forward
+      ply_file << cx << " " << cy << " " << (cz - glyph_size) << " 255 0 0\n"; // Backward
+    }
   }
 
   // Stream Original Base Mesh Triangles.
@@ -346,33 +262,35 @@ bool BfmModel::SaveMeanMeshWithLandmarksToPly(const std::string& filename) const
     ply_file << "3 " << idx0 << " " << idx1 << " " << idx2 << "\n";
   }
 
-  // Stream Landmark Glyph Triangles (Stitching the diamonds together).
-  int landmark_count = 0;
-  for (const auto& [name, vertex_idx] : landmarks_) {
-    // Calculate where this specific landmark's 6 vertices start in the global PLY block.
-    int base_idx = base_vertices + (landmark_count * 6);
+  // Stream Landmark Glyph Triangles if needed (stitch the diamonds together).
+  if (include_landmarks) {
+    int landmark_count = 0;
+    for (const auto& [name, vertex_idx] : landmarks_) {
+      // Calculate where this specific landmark's 6 vertices start in the global PLY block.
+      int base_idx = base_vertices + (landmark_count * 6);
 
-    // Local vertex aliases for clarity.
-    int xp = base_idx + 0; // +X
-    int xn = base_idx + 1; // -X
-    int yp = base_idx + 2; // +Y
-    int yn = base_idx + 3; // -Y
-    int zp = base_idx + 4; // +Z
-    int zn = base_idx + 5; // -Z
+      // Local vertex aliases for clarity.
+      int xp = base_idx + 0; // +X
+      int xn = base_idx + 1; // -X
+      int yp = base_idx + 2; // +Y
+      int yn = base_idx + 3; // -Y
+      int zp = base_idx + 4; // +Z
+      int zn = base_idx + 5; // -Z
 
-    // Top Pyramid Faces
-    ply_file << "3 " << zp << " " << xp << " " << yp << "\n";
-    ply_file << "3 " << zp << " " << yp << " " << xn << "\n";
-    ply_file << "3 " << zp << " " << xn << " " << yn << "\n";
-    ply_file << "3 " << zp << " " << yn << " " << xp << "\n";
+      // Top Pyramid Faces
+      ply_file << "3 " << zp << " " << xp << " " << yp << "\n";
+      ply_file << "3 " << zp << " " << yp << " " << xn << "\n";
+      ply_file << "3 " << zp << " " << xn << " " << yn << "\n";
+      ply_file << "3 " << zp << " " << yn << " " << xp << "\n";
 
-    // Bottom Pyramid Faces
-    ply_file << "3 " << zn << " " << yp << " " << xp << "\n";
-    ply_file << "3 " << zn << " " << xn << " " << yp << "\n";
-    ply_file << "3 " << zn << " " << yn << " " << xn << "\n";
-    ply_file << "3 " << zn << " " << xp << " " << yn << "\n";
+      // Bottom Pyramid Faces
+      ply_file << "3 " << zn << " " << yp << " " << xp << "\n";
+      ply_file << "3 " << zn << " " << xn << " " << yp << "\n";
+      ply_file << "3 " << zn << " " << yn << " " << xn << "\n";
+      ply_file << "3 " << zn << " " << xp << " " << yn << "\n";
 
-    landmark_count++;
+      landmark_count++;
+    }
   }
 
   ply_file.close();

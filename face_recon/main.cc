@@ -49,8 +49,8 @@ int main(int argc, char* argv[]) {
     model.PrintModelSummary();
 
     // Generate static 3D face representations.
-    model.SaveMeanMeshToPly(output_dir + "/bfm_mean_face.ply");
-    model.SaveMeanMeshWithLandmarksToPly(output_dir + "/bfm_mean_face_with_landmarks.ply");
+    model.SaveMeanMeshToPly(output_dir + "/bfm_mean_face.ply", false);
+    model.SaveMeanMeshToPly(output_dir + "/bfm_mean_face_with_landmarks.ply", true);
     model.SaveLandmarksToTxt(output_dir + "/bfm_landmarks.txt");
   } else {
     std::cout << "[INFO] Model loaded successfully. Pass --check-bfm to inspect the structural assets.\n";
