@@ -9,6 +9,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM "3.14")
 
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "Allowed build types" FORCE)
 project(face_reconstruction)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Options.
 set(LIBRARY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs CACHE PATH "Path to lib folder")
