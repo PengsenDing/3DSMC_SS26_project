@@ -1,5 +1,78 @@
 # Face Reconstruction
 
+# 3D Face Reconstruction Optimization
+> TUM 3D Scanning and Motion Capture — Summer Semester 2026
+
+A lightweight, high-performance C++ pipeline to optimize a 3D Morphable Model (3DMM) based on the Basel Face Model 2019.
+
+---
+
+## Required Libraries
+
+### 1. Required Libraries (Located in `libs/`)
+Ensure you have the following packages installed on your `libs/` folder:
+These dependencies are already included directly in the repository layout:
+* **Eigen:** Linear algebra and matrix operations.
+* **Ceres Solver:** Non-linear least squares optimization framework.
+* **glog (Google Logging):** Logging infrastructure required by Ceres.
+* **FLANN (1.8.4):** Fast Library for Approximate Nearest Neighbors.
+* **FreeImage:** Image loading and rendering support.
+
+### 2. Auto-Fetched Dependencies (Handled by CMake)
+The following header-only libraries are **automatically downloaded and configured** by CMake during the first build step. *Note: An active internet connection is required for the initial setup:*
+* **HighFive:** Header-only C++ interface for HDF5 parsing.
+* **CLI11:** Command-line argument parsing interface.
+
+---
+
+## Data Directory Setup
+
+The `data/` folder is reserved for the Basel Face Model (BFM) dataset. Download the [model2019_face12.h5 file](https://faces.dmi.unibas.ch/bfm/bfm2019.html) inside the `data/` folder.
+
+---
+
+## Compilation Steps
+
+We use a standard standard CMake out-of-source build pipeline. Run the following sequence from the repository root directory:
+
+```console
+# 1. Configure the project 
+# This step automatically links the local /libs and pulls down HighFive/CLI11
+cmake -S . -B build
+
+# 2. Compile the target executable using all available CPU cores
+cmake --build build --parallel
+```
+---
+
+## Running Options
+
+You can run the executable directly from the repository root directory. The binary leverages CLI11 to provide flexible runtime configuration flags:
+
+```console
+# 1. Configure the project 
+# This step automatically links the local /libs and pulls down HighFive/CLI11
+cmake -S . -B build
+
+# 2. Compile the target executable using all available CPU cores
+cmake --build build --parallel
+```
+
+---
+## Run with configurable settings
+
+Run the code directly with:
+
+```console
+./build/face_reconstruction option_flags
+```
+
+### Available Configuration Flags:
+    -c, --check-bfm Model architecture validation: prints out the model parameters dimensions and exports fixed debug PLY meshes.
+
+    -m, --model <path> Overrides the default model dataset lookup path. (Defaults to data/model2019_face12.h5).
+
+    -o, --output <dir> Specifies the target destination folder where generated PLY meshes, tracking snapshots, and output logs will be written. (Defaults to `results/`).
 
 
 ## Getting started
