@@ -26,12 +26,14 @@ namespace {
 
 void print_usage(const char* executable_name) {
     std::cout << "Usage: " << executable_name
-              << " [mesh.obj] [--info] [--frames N] [--landmarks landmarks.csv]\n\n";
+              << " [mesh.obj] [--info] [--frames N] [--landmarks landmarks.csv]"
+                 " [--correspondences correspondences.csv]\n\n";
     std::cout << "Arguments:\n";
     std::cout << "  mesh.obj  OBJ mesh to load. Defaults to data/model.obj.\n";
     std::cout << "  --info    Load the mesh and print its summary without opening a window.\n";
     std::cout << "  --frames  Render N frames and exit. Useful for viewer smoke tests.\n";
     std::cout << "  --landmarks  Load a MediaPipe landmark CSV and print its summary.\n";
+    std::cout << "  --correspondences  Load a BFM/MediaPipe correspondence CSV summary.\n";
     std::cout << "  --deps    Print the linked dependency report.\n";
     std::cout << "  --help    Show this help text.\n";
 }
@@ -59,6 +61,7 @@ std::string dependency_report() {
 int run(int argc, char** argv) {
     std::filesystem::path mesh_path = "data/model.obj";
     std::optional<std::filesystem::path> landmarks_path;
+    std::optional<std::filesystem::path> correspondences_path;
     bool info_only = false;
     ViewerOptions viewer_options;
 
@@ -99,6 +102,14 @@ int run(int argc, char** argv) {
             continue;
         }
 
+        if (argument == "--correspondences") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--correspondences requires a CSV path");
+            }
+            correspondences_path = argv[++i];
+            continue;
+        }
+
         if (!argument.empty() && argument.front() == '-') {
             throw std::runtime_error("Unknown option: " + argument);
         }
@@ -112,6 +123,13 @@ int run(int argc, char** argv) {
     if (landmarks_path.has_value()) {
         const std::vector<Landmark2D> landmarks = load_landmarks_csv(*landmarks_path);
         std::cout << landmark_summary(landmarks, *landmarks_path);
+    }
+
+    if (correspondences_path.has_value()) {
+        const std::vector<BfmMediaPipeCorrespondence> correspondences =
+            load_bfm_mediapipe_correspondences(*correspondences_path);
+        std::cout << bfm_mediapipe_correspondence_summary(correspondences,
+                                                          *correspondences_path);
     }
 
     if (info_only) {

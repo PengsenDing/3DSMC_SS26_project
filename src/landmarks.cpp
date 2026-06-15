@@ -69,6 +69,10 @@ bool is_header_row(const std::vector<std::string>& fields) {
     return !fields.empty() && fields.front() == "index";
 }
 
+bool is_correspondence_header_row(const std::vector<std::string>& fields) {
+    return !fields.empty() && fields.front() == "bfm_landmark_name";
+}
+
 }  // namespace
 
 std::vector<Landmark2D> load_landmarks_csv(const std::filesystem::path& path) {
@@ -92,18 +96,23 @@ std::vector<Landmark2D> load_landmarks_csv(const std::filesystem::path& path) {
             continue;
         }
 
-        if (fields.size() != 6) {
+        if (fields.size() != 6 && fields.size() != 7) {
             throw std::runtime_error("Landmark CSV line " + std::to_string(line_number) +
-                                     ": expected 6 columns");
+                                     ": expected 6 or 7 columns");
         }
 
+        const bool has_name_column = fields.size() == 7;
+        const std::size_t coordinate_offset = has_name_column ? 1 : 0;
         Landmark2D landmark;
         landmark.index = parse_int_field(fields[0], line_number, "index");
-        landmark.x_px = parse_float_field(fields[1], line_number, "x_px");
-        landmark.y_px = parse_float_field(fields[2], line_number, "y_px");
-        landmark.z_norm = parse_float_field(fields[3], line_number, "z_norm");
-        landmark.x_norm = parse_float_field(fields[4], line_number, "x_norm");
-        landmark.y_norm = parse_float_field(fields[5], line_number, "y_norm");
+        if (has_name_column) {
+            landmark.name = fields[1];
+        }
+        landmark.u = parse_float_field(fields[1 + coordinate_offset], line_number, "u");
+        landmark.v = parse_float_field(fields[2 + coordinate_offset], line_number, "v");
+        landmark.z_norm = parse_float_field(fields[3 + coordinate_offset], line_number, "z_norm");
+        landmark.x_norm = parse_float_field(fields[4 + coordinate_offset], line_number, "x_norm");
+        landmark.y_norm = parse_float_field(fields[5 + coordinate_offset], line_number, "y_norm");
         landmarks.push_back(landmark);
     }
 
@@ -122,11 +131,11 @@ std::string landmark_summary(const std::vector<Landmark2D>& landmarks,
 
     auto x_range = std::minmax_element(
         landmarks.begin(), landmarks.end(), [](const Landmark2D& lhs, const Landmark2D& rhs) {
-            return lhs.x_px < rhs.x_px;
+            return lhs.u < rhs.u;
         });
     auto y_range = std::minmax_element(
         landmarks.begin(), landmarks.end(), [](const Landmark2D& lhs, const Landmark2D& rhs) {
-            return lhs.y_px < rhs.y_px;
+            return lhs.v < rhs.v;
         });
     auto index_range = std::minmax_element(
         landmarks.begin(), landmarks.end(), [](const Landmark2D& lhs, const Landmark2D& rhs) {
@@ -139,10 +148,80 @@ std::string landmark_summary(const std::vector<Landmark2D>& landmarks,
     summary << "Index range: [" << index_range.first->index << ", " << index_range.second->index
             << "]\n";
     summary << std::fixed << std::setprecision(2);
-    summary << "X pixel range: [" << x_range.first->x_px << ", " << x_range.second->x_px
-            << "]\n";
-    summary << "Y pixel range: [" << y_range.first->y_px << ", " << y_range.second->y_px
-            << "]\n";
+    summary << "u range: [" << x_range.first->u << ", " << x_range.second->u << "]\n";
+    summary << "v range: [" << y_range.first->v << ", " << y_range.second->v << "]\n";
+    return summary.str();
+}
+
+std::vector<BfmMediaPipeCorrespondence> load_bfm_mediapipe_correspondences(
+    const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("Could not open BFM/MediaPipe correspondence CSV: " +
+                                 path.string());
+    }
+
+    std::vector<BfmMediaPipeCorrespondence> correspondences;
+    std::string line;
+    int line_number = 0;
+
+    while (std::getline(input, line)) {
+        ++line_number;
+        if (trim(line).empty()) {
+            continue;
+        }
+
+        const std::vector<std::string> fields = split_csv_row(line);
+        if (line_number == 1 && is_correspondence_header_row(fields)) {
+            continue;
+        }
+
+        if (fields.size() != 3) {
+            throw std::runtime_error("BFM/MediaPipe correspondence CSV line " +
+                                     std::to_string(line_number) + ": expected 3 columns");
+        }
+
+        BfmMediaPipeCorrespondence correspondence;
+        correspondence.bfm_landmark_name = fields[0];
+        correspondence.bfm_vertex_id = parse_int_field(fields[1], line_number, "bfm_vertex_id");
+        correspondence.mediapipe_index =
+            parse_int_field(fields[2], line_number, "mediapipe_index");
+        correspondences.push_back(correspondence);
+    }
+
+    if (correspondences.empty()) {
+        throw std::runtime_error("BFM/MediaPipe correspondence CSV has no rows: " +
+                                 path.string());
+    }
+
+    return correspondences;
+}
+
+std::string bfm_mediapipe_correspondence_summary(
+    const std::vector<BfmMediaPipeCorrespondence>& correspondences,
+    const std::filesystem::path& source_path) {
+    if (correspondences.empty()) {
+        return "BFM/MediaPipe correspondences: <empty>\n";
+    }
+
+    auto bfm_vertex_range = std::minmax_element(
+        correspondences.begin(), correspondences.end(),
+        [](const BfmMediaPipeCorrespondence& lhs, const BfmMediaPipeCorrespondence& rhs) {
+            return lhs.bfm_vertex_id < rhs.bfm_vertex_id;
+        });
+    auto mediapipe_index_range = std::minmax_element(
+        correspondences.begin(), correspondences.end(),
+        [](const BfmMediaPipeCorrespondence& lhs, const BfmMediaPipeCorrespondence& rhs) {
+            return lhs.mediapipe_index < rhs.mediapipe_index;
+        });
+
+    std::ostringstream summary;
+    summary << "BFM/MediaPipe correspondences: " << source_path.string() << '\n';
+    summary << "Count: " << correspondences.size() << '\n';
+    summary << "BFM vertex range: [" << bfm_vertex_range.first->bfm_vertex_id << ", "
+            << bfm_vertex_range.second->bfm_vertex_id << "]\n";
+    summary << "MediaPipe index range: [" << mediapipe_index_range.first->mediapipe_index << ", "
+            << mediapipe_index_range.second->mediapipe_index << "]\n";
     return summary.str();
 }
 

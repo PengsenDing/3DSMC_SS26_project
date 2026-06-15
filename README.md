@@ -105,6 +105,8 @@ source .venv/bin/activate
 python scripts/detect_landmarks.py \
   --image inputs/face.jpg \
   --csv outputs/face_landmarks.csv \
+  --bfm-csv outputs/bfm_mediapipe_landmarks.csv \
+  --txt outputs/face_landmarks.txt \
   --debug outputs/face_landmarks.png
 ```
 
@@ -113,14 +115,52 @@ Expected output:
 ```text
 Detected 478 landmarks
 Saved CSV: outputs/face_landmarks.csv
+Saved TXT: outputs/face_landmarks.txt
+Saved BFM CSV: outputs/bfm_mediapipe_landmarks.csv
 Saved debug image: outputs/face_landmarks.png
 ```
 
 The CSV format is intentionally simple for later C++ loading:
 
 ```csv
-index,x_px,y_px,z_norm,x_norm,y_norm
-0,512.3,421.8,-0.038,0.500,0.412
+index,name,u,v,z_norm,x_norm,y_norm
+1,nose_tip,512.3,421.8,-0.038,0.500,0.412
+```
+
+The optional TXT output contains the same landmark ids and coordinates in a
+tab-separated text format:
+
+```text
+# index	name	u	v	z_norm	x_norm	y_norm
+1	nose_tip	512.300000	421.800000	-0.038000	0.500000	0.412000
+```
+
+`u` and `v` are the pixel coordinates in the input image, with `u` increasing to
+the right and `v` increasing downward.
+
+Only selected MediaPipe landmarks have semantic names such as `nose_tip`,
+`left_eye_outer_corner`, or `chin`; unnamed landmarks keep an empty `name` field
+but remain in the file with their numeric index.
+
+For BFM fitting, keep the reusable correspondence table separate from the
+per-image landmark detections:
+
+```csv
+bfm_landmark_name,bfm_vertex_id,mediapipe_index
+center.nose.tip,15841,1
+```
+
+The correspondence source is `data/bfm_mediapipe_correspondence.csv`. It maps each
+BFM landmark/vertex to a candidate MediaPipe index. The BFM vertex coordinates should
+come from the loaded BFM mesh by `bfm_vertex_id`, while the image coordinates come from
+`outputs/face_landmarks.csv`.
+
+If you pass `--bfm-csv`, the Python script writes a convenience per-image join of the
+correspondence table and detected MediaPipe coordinates:
+
+```csv
+bfm_landmark_name,bfm_vertex_id,mediapipe_index,mediapipe_name,u,v,z_norm,x_norm,y_norm
+center.nose.tip,15841,1,nose_tip,512.3,421.8,-0.038,0.500,0.412
 ```
 
 Use `--max-points-to-label N` to label the first `N` landmark indices in the debug image
@@ -132,11 +172,15 @@ After generating a CSV, load it with the C++ executable:
 
 ```bash
 cmake --build build
-./build/face_reconstruction --info --landmarks outputs/face_landmarks.csv
+./build/face_reconstruction \
+  --info \
+  --landmarks outputs/face_landmarks.csv \
+  --correspondences data/bfm_mediapipe_correspondence.csv
 ```
 
-This prints the mesh summary plus the landmark count, index range, and pixel-coordinate
-ranges. It is the handoff point between Python landmark detection and later C++ fitting.
+This prints the mesh summary, the MediaPipe landmark count/ranges, and the
+BFM/MediaPipe correspondence count/ranges. It is the handoff point between Python
+landmark detection and later C++ fitting.
 
 ## Week 1 Progress
 
