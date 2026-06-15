@@ -2,6 +2,7 @@
 
 #define GL_SILENCE_DEPRECATION
 
+#include "face_reconstruction/landmarks.hpp"
 #include "face_reconstruction/mesh.hpp"
 #include "face_reconstruction/obj_loader.hpp"
 #include "face_reconstruction/viewer.hpp"
@@ -15,6 +16,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -23,11 +25,13 @@ namespace face_reconstruction {
 namespace {
 
 void print_usage(const char* executable_name) {
-    std::cout << "Usage: " << executable_name << " [mesh.obj] [--info] [--frames N]\n\n";
+    std::cout << "Usage: " << executable_name
+              << " [mesh.obj] [--info] [--frames N] [--landmarks landmarks.csv]\n\n";
     std::cout << "Arguments:\n";
     std::cout << "  mesh.obj  OBJ mesh to load. Defaults to data/model.obj.\n";
     std::cout << "  --info    Load the mesh and print its summary without opening a window.\n";
     std::cout << "  --frames  Render N frames and exit. Useful for viewer smoke tests.\n";
+    std::cout << "  --landmarks  Load a MediaPipe landmark CSV and print its summary.\n";
     std::cout << "  --deps    Print the linked dependency report.\n";
     std::cout << "  --help    Show this help text.\n";
 }
@@ -54,6 +58,7 @@ std::string dependency_report() {
 
 int run(int argc, char** argv) {
     std::filesystem::path mesh_path = "data/model.obj";
+    std::optional<std::filesystem::path> landmarks_path;
     bool info_only = false;
     ViewerOptions viewer_options;
 
@@ -86,6 +91,14 @@ int run(int argc, char** argv) {
             continue;
         }
 
+        if (argument == "--landmarks") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--landmarks requires a CSV path");
+            }
+            landmarks_path = argv[++i];
+            continue;
+        }
+
         if (!argument.empty() && argument.front() == '-') {
             throw std::runtime_error("Unknown option: " + argument);
         }
@@ -95,6 +108,11 @@ int run(int argc, char** argv) {
 
     const Mesh mesh = load_obj_mesh(mesh_path);
     std::cout << mesh_summary(mesh);
+
+    if (landmarks_path.has_value()) {
+        const std::vector<Landmark2D> landmarks = load_landmarks_csv(*landmarks_path);
+        std::cout << landmark_summary(landmarks, *landmarks_path);
+    }
 
     if (info_only) {
         return 0;

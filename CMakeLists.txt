@@ -25,6 +25,7 @@ pkg_check_modules(SFML_SYSTEM REQUIRED IMPORTED_TARGET sfml-system)
 
 add_library(face_reconstruction_core
     src/app.cpp
+    src/landmarks.cpp
     src/mesh.cpp
     src/obj_loader.cpp
     src/viewer.cpp

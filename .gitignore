@@ -1,2 +1,14 @@
 build/
 .DS_Store
+.venv/
+.cache/
+__pycache__/
+*.pyc
+
+# Local preprocessing data and downloaded model bundles.
+models/*
+!models/.gitkeep
+inputs/*
+!inputs/.gitkeep
+outputs/*
+!outputs/.gitkeep
