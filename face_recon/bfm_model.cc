@@ -10,6 +10,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <stdexcept>
 #include <limits>
 #include <algorithm>
 
@@ -312,6 +313,14 @@ bool BfmModel::SaveLandmarksToTxt(const std::string& filename) const {
   }
   txt_file.close();
   return true;
+}
+
+int BfmModel::GetLandmarkVertexId(const std::string& name) const {
+  auto it = landmarks_.find(name);
+  if (it == landmarks_.end()) {
+    throw std::runtime_error("BFM landmark not found: " + name);
+  }
+  return it->second;
 }
 
 }  // namespace face_recon
