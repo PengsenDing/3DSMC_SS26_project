@@ -51,6 +51,9 @@ class BfmModel {
   // Exports a simple text file listing landmark names and their corresponding vertex indices.
   bool SaveLandmarksToTxt(const std::string& filename) const;
 
+  // Search closest vertex given Landmark name
+  int GetLandmarkVertexId(const std::string& name) const;
+
   // Dumps model layer shapes and asset metadata to standard console logging.
   void PrintModelSummary() const;
 
