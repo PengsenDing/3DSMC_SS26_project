@@ -9,6 +9,7 @@
 #include <fstream>   
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include <vector>
 #include <limits>
 #include <algorithm>
@@ -312,6 +313,39 @@ bool BfmModel::SaveLandmarksToTxt(const std::string& filename) const {
   }
   txt_file.close();
   return true;
+}
+
+int BfmModel::GetLandmarkVertexId(const std::string& name) const {
+  auto it = landmarks_.find(name);
+  if (it == landmarks_.end()) {
+    throw std::runtime_error("BFM landmark not found: " + name);
+  }
+  return it->second;
+}
+
+Eigen::Vector3d BfmModel::GetMeanVertex(int vertex_id) const {
+  Eigen::VectorXd mean = shape_.mean + expression_.mean;
+
+  return Eigen::Vector3d(
+      mean(3 * vertex_id + 0),
+      mean(3 * vertex_id + 1),
+      mean(3 * vertex_id + 2));
+}
+
+Eigen::MatrixXd BfmModel::GetShapeBasisForVertex(int vertex_id, int num_shape) const {
+  return shape_.pca_basis.block(3 * vertex_id, 0, 3, num_shape);
+}
+
+Eigen::MatrixXd BfmModel::GetExpressionBasisForVertex(int vertex_id, int num_expr) const {
+  return expression_.pca_basis.block(3 * vertex_id, 0, 3, num_expr);
+}
+
+const Eigen::VectorXd& BfmModel::ShapeVariance() const {
+  return shape_.pca_variance;
+}
+
+const Eigen::VectorXd& BfmModel::ExpressionVariance() const {
+  return expression_.pca_variance;
 }
 
 }  // namespace face_recon
