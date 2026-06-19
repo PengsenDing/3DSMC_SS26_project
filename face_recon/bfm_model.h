@@ -66,6 +66,23 @@ class BfmModel {
   const Eigen::MatrixXd& points() const { return points_; }
   const std::map<std::string, int>& landmarks() const { return landmarks_; }
 
+  // Add these helpers for sparse landmark fitting.
+  // Returns the BFM vertex id corresponding to a semantic landmark name.
+  int GetLandmarkVertexId(const std::string& name) const;
+
+  // Returns the mean 3D position of one mesh vertex.
+  Eigen::Vector3d GetMeanVertex(int vertex_id) const;
+
+  // Returns the 3 x num_shape identity basis block for one vertex.
+  Eigen::MatrixXd GetShapeBasisForVertex(int vertex_id, int num_shape) const;
+
+  // Returns the 3 x num_expr expression basis block for one vertex.
+  Eigen::MatrixXd GetExpressionBasisForVertex(int vertex_id, int num_expr) const;
+
+  // PCA variances for regularization terms.
+  const Eigen::VectorXd& ShapeVariance() const;
+  const Eigen::VectorXd& ExpressionVariance() const
+
   // Mutators (Setters).
   void set_shape(const PcaComponent& shape) { shape_ = shape; }
   void set_expression(const PcaComponent& expression) { expression_ = expression; }
