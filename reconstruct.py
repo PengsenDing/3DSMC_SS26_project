@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -55,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         "--render",
         action="store_true",
         help="Also export albedo, depth, normal, and checkerboard PNGs",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Save detailed landmark, rasterization, and fitting diagnostics",
     )
     parser.add_argument(
         "--verbose-optimization",
@@ -134,7 +140,9 @@ def main() -> int:
     run_directory = args.output_root.expanduser().resolve() / run_name
     run_directory.mkdir(parents=True, exist_ok=True)
     landmarks_csv = run_directory / "landmarks.csv"
-    landmarks_preview = run_directory / "landmarks.png"
+    landmarks_preview = (
+        run_directory / "landmarks.png" if args.diagnostics else None
+    )
 
     total_steps = 3 if args.render else 2
     print(f"[1/{total_steps}] Detecting landmarks in {image.name}")
@@ -176,6 +184,8 @@ def main() -> int:
     ]
     if args.no_dense_refinement:
         fitting_command.append("--no-dense-refinement")
+    if args.diagnostics:
+        fitting_command.append("--diagnostics")
     if args.verbose_optimization:
         fitting_command.append("--verbose-optimization")
     run_command(fitting_command)
@@ -189,66 +199,109 @@ def main() -> int:
         run_command(
             [
                 str(viewer),
-                str(run_directory / "face_aligned.ply"),
+                str(run_directory / "face.ply"),
                 "--render-all",
                 str(run_directory / "renders"),
             ]
         )
+
+    artifacts = {
+        "mesh_off": "face.off",
+        "mesh_ply": "face.ply",
+        "fitting_report": "fitting.txt",
+        "rendered_final": "rendered_final.png",
+        "rendered_final_overlay": "rendered_final_overlay.png",
+    }
+    if args.diagnostics:
+        artifacts.update(
+            {
+                "landmarks": "landmarks.csv",
+                "landmark_preview": "landmarks.png",
+                "aligned_mesh_ply": "face_aligned.ply",
+                "reprojections": "reprojections.csv",
+                "overlay": "overlay.png",
+                "raster_depth": "raster_depth.png",
+                "visibility": "visibility.png",
+                "intrinsic_albedo_mesh": "face_albedo.ply",
+                "photometric_report": "photometric.txt",
+                "texture_fitting_report": "texture_fitting.txt",
+                "photometric_mask": "photometric_mask.png",
+                "texture_mask": "texture_mask.png",
+                "mean_albedo_render": "mean_albedo_render.png",
+                "estimated_albedo": "estimated_albedo.png",
+                "camera_normal": "camera_normal.png",
+                "rendered_initial": "rendered_initial.png",
+                "rendered_illumination": "rendered_illumination.png",
+                "rendered_intrinsic": "rendered_intrinsic.png",
+                "rendered_intrinsic_overlay": "rendered_intrinsic_overlay.png",
+                "photometric_residual": "photometric_residual.png",
+                "texture_residual": "texture_residual.png",
+            }
+        )
+        if not args.no_dense_refinement:
+            artifacts.update(
+                {
+                    "dense_refinement_report": "dense_refinement.txt",
+                    "target_silhouette": "target_silhouette.png",
+                    "refined_silhouette": "refined_silhouette.png",
+                    "refined_geometry_overlay": "refined_geometry_overlay.png",
+                    "initial_appearance": "initial_appearance/",
+                }
+            )
+    if args.render:
+        artifacts["renders"] = "renders/"
+
+    if not args.diagnostics:
+        diagnostics = [
+            "landmarks.csv",
+            "landmarks.png",
+            "face_aligned.ply",
+            "face_albedo.ply",
+            "reprojections.csv",
+            "overlay.png",
+            "raster_depth.png",
+            "visibility.png",
+            "photometric.txt",
+            "texture_fitting.txt",
+            "photometric_mask.png",
+            "texture_mask.png",
+            "mean_albedo_render.png",
+            "estimated_albedo.png",
+            "camera_normal.png",
+            "rendered_initial.png",
+            "rendered_illumination.png",
+            "rendered_intrinsic.png",
+            "rendered_intrinsic_overlay.png",
+            "photometric_residual.png",
+            "texture_residual.png",
+            "dense_refinement.txt",
+            "target_silhouette.png",
+            "refined_silhouette.png",
+            "refined_geometry_overlay.png",
+        ]
+        for filename in diagnostics:
+            path = run_directory / filename
+            if path.is_file():
+                path.unlink()
+        shutil.rmtree(run_directory / "initial_appearance", ignore_errors=True)
+    if not args.render:
+        shutil.rmtree(run_directory / "renders", ignore_errors=True)
 
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "input_image": str(image),
         "bfm_model": str(model),
         "landmark_count": landmark_count,
-        "artifacts": {
-            "landmarks": "landmarks.csv",
-            "landmark_preview": "landmarks.png",
-            "mesh_off": "face.off",
-            "mesh_ply": "face.ply",
-            "aligned_mesh_ply": "face_aligned.ply",
-            "fitting_report": "fitting.txt",
-            "reprojections": "reprojections.csv",
-            "overlay": "overlay.png",
-            "raster_depth": "raster_depth.png",
-            "visibility": "visibility.png",
-            "intrinsic_albedo_mesh": "face_albedo.ply",
-            "photometric_report": "photometric.txt",
-            "texture_fitting_report": "texture_fitting.txt",
-            "photometric_mask": "photometric_mask.png",
-            "texture_mask": "texture_mask.png",
-            "mean_albedo_render": "mean_albedo_render.png",
-            "estimated_albedo": "estimated_albedo.png",
-            "camera_normal": "camera_normal.png",
-            "rendered_initial": "rendered_initial.png",
-            "rendered_illumination": "rendered_illumination.png",
-            "rendered_intrinsic": "rendered_intrinsic.png",
-            "rendered_intrinsic_overlay": "rendered_intrinsic_overlay.png",
-            "rendered_final": "rendered_final.png",
-            "rendered_final_overlay": "rendered_final_overlay.png",
-            "photometric_residual": "photometric_residual.png",
-            "texture_residual": "texture_residual.png",
-        },
+        "artifacts": artifacts,
     }
-    if not args.no_dense_refinement:
-        manifest["artifacts"].update(
-            {
-                "dense_refinement_report": "dense_refinement.txt",
-                "target_silhouette": "target_silhouette.png",
-                "refined_silhouette": "refined_silhouette.png",
-                "refined_geometry_overlay": "refined_geometry_overlay.png",
-                "initial_appearance": "initial_appearance/",
-            }
-        )
-    if args.render:
-        manifest["artifacts"]["renders"] = "renders/"
     (run_directory / "run.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
 
     print(f"\nReconstruction complete: {run_directory}")
     print(f"MeshLab mesh: {run_directory / 'face.off'}")
-    print(f"Colored mesh: {run_directory / 'face_aligned.ply'}")
-    print(f"Fitting check: {run_directory / 'overlay.png'}")
+    print(f"Colored mesh: {run_directory / 'face.ply'}")
+    print(f"Final rendering: {run_directory / 'rendered_final_overlay.png'}")
     return 0
 
 

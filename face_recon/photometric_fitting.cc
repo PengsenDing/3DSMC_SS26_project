@@ -525,7 +525,8 @@ PhotometricResult FitPhotometricAppearance(
   result.usable = std::isfinite(result.final_rmse) &&
                   result.final_rmse <= result.initial_rmse;
 
-  if (!SaveDiagnosticImages(
+  if (options.save_diagnostics &&
+      !SaveDiagnosticImages(
           image, mask, model, rasterization, camera_normals,
           result.fitted_vertex_albedo, initial_illumination,
           illumination_only, result.illumination, output_directory)) {

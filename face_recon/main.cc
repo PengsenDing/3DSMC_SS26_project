@@ -31,6 +31,7 @@ int main(int argc, char* argv[]) {
   std::optional<std::string> image_path;
   bool check_bfm = false;
   bool verbose_optimization = false;
+  bool save_diagnostics = false;
   face_recon::FittingOptions fitting_options;
   face_recon::PhotometricOptions photometric_options;
   face_recon::DenseRefinementOptions dense_options;
@@ -71,6 +72,8 @@ int main(int argc, char* argv[]) {
                  "Number of dynamic contour reassignment steps");
   app.add_flag("-v,--verbose-optimization", verbose_optimization,
                "Print Ceres iteration progress");
+  app.add_flag("--diagnostics", save_diagnostics,
+               "Save detailed fitting, rasterization, and appearance diagnostics");
   app.add_option("--albedo-components",
                  photometric_options.num_albedo_coefficients,
                  "Number of normalized BFM albedo coefficients");
@@ -156,6 +159,9 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   dense_options.enabled = !disable_dense_refinement;
+  dense_options.save_diagnostics = save_diagnostics;
+  photometric_options.save_diagnostics = save_diagnostics;
+  texture_options.save_diagnostics = save_diagnostics;
 
   // Run the core execution pipeline.
   std::cout << "[INFO] Initializing Face Reconstruction Pipeline...\n";
@@ -265,7 +271,8 @@ int main(int argc, char* argv[]) {
                 *image_path, model, result.vertices, result.camera,
                 *rasterization, photometric_options,
                 initial_appearance_directory.string());
-        if (!face_recon::SavePhotometricReport(
+        if (save_diagnostics &&
+            !face_recon::SavePhotometricReport(
                 initial_appearance,
                 (initial_appearance_directory / "photometric.txt").string())) {
           return 1;
@@ -275,7 +282,8 @@ int main(int argc, char* argv[]) {
             face_recon::RefineGeometryDense(
                 *image_path, model, result, initial_appearance, landmarks,
                 dense_options, output_dir);
-        if (!face_recon::SaveDenseRefinementReport(
+        if (save_diagnostics &&
+            !face_recon::SaveDenseRefinementReport(
                 dense_result, dense_report_path.string())) {
           return 1;
         }
@@ -329,8 +337,9 @@ int main(int argc, char* argv[]) {
               *image_path, model.triangles(), *rasterization, fitted_colors,
               &landmarks, texture_options, output_dir);
       if (!texture_result.usable ||
-          !face_recon::SaveTextureFittingReport(
-              texture_result, texture_report_path.string())) {
+          (save_diagnostics &&
+           !face_recon::SaveTextureFittingReport(
+               texture_result, texture_report_path.string()))) {
         std::cerr << "[ERROR] Dense RGB texture fitting did not improve the "
                      "rendered image error.\n";
         return 1;
@@ -338,21 +347,25 @@ int main(int argc, char* argv[]) {
       fitted_colors = texture_result.vertex_colors;
       fitted_colors_pointer = &fitted_colors;
     }
-    const Eigen::VectorXd aligned_vertices =
-        face_recon::ApplyCameraRotation(result.vertices, result.camera);
-
     if (!face_recon::SaveMeshToOff(model, result.vertices, mesh_path.string()) ||
         !face_recon::SaveMeshToPly(model, result.vertices,
                                    colored_mesh_path.string(),
                                    fitted_colors_pointer) ||
-        !face_recon::SaveMeshToPly(model, aligned_vertices,
-                                   aligned_mesh_path.string(),
-                                   fitted_colors_pointer) ||
-        !face_recon::SaveFittingReport(result, report_path.string()) ||
-        !face_recon::SaveReprojectionsToCsv(result, reprojection_path.string())) {
+        !face_recon::SaveFittingReport(result, report_path.string())) {
       return 1;
     }
-    if (photometric_result.has_value() &&
+    if (save_diagnostics) {
+      const Eigen::VectorXd aligned_vertices =
+          face_recon::ApplyCameraRotation(result.vertices, result.camera);
+      if (!face_recon::SaveMeshToPly(
+              model, aligned_vertices, aligned_mesh_path.string(),
+              fitted_colors_pointer) ||
+          !face_recon::SaveReprojectionsToCsv(
+              result, reprojection_path.string())) {
+        return 1;
+      }
+    }
+    if (save_diagnostics && photometric_result.has_value() &&
         (!face_recon::SaveMeshToPly(
              model, result.vertices, intrinsic_albedo_mesh_path.string(),
              &photometric_result->fitted_vertex_albedo) ||
@@ -360,12 +373,12 @@ int main(int argc, char* argv[]) {
              *photometric_result, photometric_report_path.string()))) {
       return 1;
     }
-    if (image_path.has_value() &&
+    if (save_diagnostics && image_path.has_value() &&
         !face_recon::SaveReprojectionOverlay(
             *image_path, result, overlay_path.string())) {
       return 1;
     }
-    if (rasterization.has_value() &&
+    if (save_diagnostics && rasterization.has_value() &&
         (!face_recon::SaveRasterDepthImage(
              *rasterization, raster_depth_path.string()) ||
          !face_recon::SaveVisibilityImage(

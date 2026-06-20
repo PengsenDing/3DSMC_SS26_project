@@ -195,12 +195,13 @@ cv::Vec3b ToBgr8(const Eigen::Vector3d& rgb) {
                    static_cast<unsigned char>(std::lround(value[0])));
 }
 
-bool SaveDiagnostics(const cv::Mat& image,
-                     const cv::Mat& mask,
-                     const Eigen::MatrixXi& triangles,
-                     const RasterizationResult& rasterization,
-                     const Eigen::VectorXd& colors,
-                     const std::string& output_directory) {
+bool SaveRenderedResult(const cv::Mat& image,
+                        const cv::Mat& mask,
+                        const Eigen::MatrixXi& triangles,
+                        const RasterizationResult& rasterization,
+                        const Eigen::VectorXd& colors,
+                        const std::string& output_directory,
+                        bool save_diagnostics) {
   cv::Mat rendered(image.rows, image.cols, CV_8UC3, cv::Scalar(0, 0, 0));
   cv::Mat overlay = image.clone();
   cv::Mat residual(image.rows, image.cols, CV_8UC3, cv::Scalar(0, 0, 0));
@@ -228,11 +229,15 @@ bool SaveDiagnostics(const cv::Mat& image,
 
   const std::filesystem::path directory(output_directory);
   std::filesystem::create_directories(directory);
-  return cv::imwrite((directory / "texture_mask.png").string(), mask) &&
-         cv::imwrite((directory / "rendered_final.png").string(), rendered) &&
-         cv::imwrite((directory / "rendered_final_overlay.png").string(),
-                     overlay) &&
-         cv::imwrite((directory / "texture_residual.png").string(), residual);
+  if (!cv::imwrite((directory / "rendered_final.png").string(), rendered) ||
+      !cv::imwrite((directory / "rendered_final_overlay.png").string(),
+                   overlay)) {
+    return false;
+  }
+  return !save_diagnostics ||
+         (cv::imwrite((directory / "texture_mask.png").string(), mask) &&
+          cv::imwrite((directory / "texture_residual.png").string(),
+                      residual));
 }
 
 }  // namespace
@@ -380,8 +385,9 @@ TextureFittingResult FitDenseVertexColors(
   result.usable = std::isfinite(result.final_rmse) &&
                   result.final_rmse <= result.initial_rmse;
 
-  if (!SaveDiagnostics(image, mask, triangles, rasterization,
-                       result.vertex_colors, output_directory)) {
+  if (!SaveRenderedResult(image, mask, triangles, rasterization,
+                          result.vertex_colors, output_directory,
+                          options.save_diagnostics)) {
     throw std::runtime_error(
         "Could not save dense texture diagnostic images");
   }

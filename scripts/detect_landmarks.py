@@ -263,7 +263,7 @@ def write_bfm_landmarks_csv(
 def run_detection(
     image_path: Path,
     csv_path: Path,
-    debug_path: Path,
+    debug_path: Path | None,
     correspondence_path: Path = DEFAULT_BFM_CORRESPONDENCES,
     txt_path: Path | None = None,
     bfm_csv_path: Path | None = None,
@@ -295,17 +295,18 @@ def run_detection(
             bfm_csv_path, correspondences, landmarks, width, height
         )
 
-    debug_path.parent.mkdir(parents=True, exist_ok=True)
-    debug_image = draw_landmarks(
-        image_bgr,
-        landmarks,
-        width,
-        height,
-        max(0, max_points_to_label),
-        cv2,
-    )
-    if not cv2.imwrite(str(debug_path), debug_image):
-        raise RuntimeError(f"OpenCV could not write debug image: {debug_path}")
+    if debug_path is not None:
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        debug_image = draw_landmarks(
+            image_bgr,
+            landmarks,
+            width,
+            height,
+            max(0, max_points_to_label),
+            cv2,
+        )
+        if not cv2.imwrite(str(debug_path), debug_image):
+            raise RuntimeError(f"OpenCV could not write debug image: {debug_path}")
 
     return len(landmarks)
 

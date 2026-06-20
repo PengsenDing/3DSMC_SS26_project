@@ -406,7 +406,10 @@ DenseRefinementResult RefineGeometryDense(
                           result.expression_coefficients, &result.vertices);
   result.usable = result.final.total <= result.initial.total &&
                   result.final.landmark_rmse <= maximum_landmark_rmse;
-  SaveRefinementDiagnostics(context, model, result.vertices, output_directory);
+  if (options.save_diagnostics) {
+    SaveRefinementDiagnostics(context, model, result.vertices,
+                              output_directory);
+  }
   return result;
 }
 

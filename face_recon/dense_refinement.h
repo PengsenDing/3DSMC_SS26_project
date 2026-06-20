@@ -15,6 +15,7 @@ namespace face_recon {
 
 struct DenseRefinementOptions {
   bool enabled = true;
+  bool save_diagnostics = false;
   int resolution = 192;
   int shape_coefficients = 6;
   int expression_coefficients = 6;

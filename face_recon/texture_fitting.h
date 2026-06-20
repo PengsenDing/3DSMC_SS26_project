@@ -12,6 +12,7 @@
 namespace face_recon {
 
 struct TextureFittingOptions {
+  bool save_diagnostics = false;
   int pixel_stride = 1;
   int mask_erosion = 1;
   int solver_iterations = 300;

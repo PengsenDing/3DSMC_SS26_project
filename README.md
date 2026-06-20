@@ -43,51 +43,29 @@ MediaPipe landmark detection
 → final albedo and illumination re-fitting
 → direct dense per-vertex RGB fitting
 → OFF and colored PLY export
-→ fitting diagnostics
+→ compact final output
 ```
 
-Use `--render` to also generate albedo, depth, normal, and checkerboard images:
+The default output is intentionally compact:
+
+```text
+reconstructions/face/
+├── face.off
+├── face.ply
+├── fitting.txt
+├── rendered_final.png
+├── rendered_final_overlay.png
+└── run.json
+```
+
+Use `--render` to add the four basic C++ rendering modes:
 
 ```bash
 python reconstruct.py inputs/face.jpg --render
 ```
 
-Every image gets one self-contained directory:
-
 ```text
-reconstructions/face/
-├── landmarks.csv
-├── landmarks.png
-├── face.off
-├── face.ply
-├── face_aligned.ply
-├── face_albedo.ply
-├── fitting.txt
-├── photometric.txt
-├── texture_fitting.txt
-├── reprojections.csv
-├── overlay.png
-├── raster_depth.png
-├── visibility.png
-├── photometric_mask.png
-├── texture_mask.png
-├── camera_normal.png
-├── mean_albedo_render.png
-├── estimated_albedo.png
-├── rendered_initial.png
-├── rendered_illumination.png
-├── rendered_intrinsic.png
-├── rendered_intrinsic_overlay.png
-├── rendered_final.png             # direct RGB texture fit
-├── rendered_final_overlay.png
-├── photometric_residual.png
-├── texture_residual.png
-├── dense_refinement.txt
-├── target_silhouette.png
-├── refined_silhouette.png
-├── refined_geometry_overlay.png
-├── run.json
-└── renders/                 # only with --render
+renders/
     ├── albedo.png
     ├── depth.png
     ├── normal.png
@@ -95,18 +73,16 @@ reconstructions/face/
 ```
 
 - Open `face.off` in MeshLab to inspect geometry.
-- Open `face_aligned.ply` to inspect the photo-colored fitted mesh.
-- Check `overlay.png` before judging the reconstruction quality.
-- Check `raster_depth.png` and `visibility.png` when projected colors look
-  incorrect.
-- Compare `rendered_initial.png`, `rendered_illumination.png`, and
-  `rendered_intrinsic.png` to inspect intrinsic appearance fitting.
+- Open `face.ply` to inspect the photo-colored fitted mesh.
 - `rendered_final.png` is the primary sample-style result: visible vertex RGB
   values are fitted directly to minimize rendered-versus-input pixel error.
-- Open `face_albedo.ply` to inspect the fitted intrinsic BFM albedo without
-  photograph lighting baked into its vertex colors.
 - Re-running the same image updates the same directory instead of scattering
   additional files around the repository.
+
+Use `--diagnostics` when detailed inspection is needed. It additionally saves
+landmarks, reprojections, visibility/depth buffers, masks, residuals,
+intrinsic albedo/illumination results, dense-refinement reports, and
+`face_aligned.ply`.
 
 Useful pipeline options:
 
@@ -122,6 +98,7 @@ Useful pipeline options:
 --no-dense-refinement Skip dense geometry refinement
 --dense-resolution   Maximum refinement image dimension
 --render             Export the four rendering modes
+--diagnostics        Export detailed intermediate and debugging artifacts
 --verbose-optimization
 ```
 
@@ -279,8 +256,9 @@ weights, a Gaussian PCA prior, and `±3σ` albedo bounds. The optimization does
 not alter pose or geometry, which keeps appearance from compensating for
 unstable shape updates.
 
-`photometric.txt` records the initial, illumination-only, and final RGB RMSE,
-along with all fitted appearance parameters.
+With `--diagnostics`, `photometric.txt` records the initial,
+illumination-only, and final RGB RMSE along with all fitted appearance
+parameters.
 
 ### Direct RGB texture fitting
 
@@ -297,10 +275,10 @@ channels directly. A weak initialization prior and mesh-edge smoothness keep
 unobserved or poorly constrained vertices stable. The rasterized face is also
 intersected with the detected MediaPipe face oval so geometry mismatch near
 the cheek or jaw does not bake background pixels into the mesh. `face.ply`,
-`face_aligned.ply`, `rendered_final.png`, and
+`rendered_final.png` and
 `rendered_final_overlay.png` use these fitted, illumination-baked colors.
-The intrinsic BFM result remains available separately as `face_albedo.ply` and
-`rendered_intrinsic.png`.
+With `--diagnostics`, the intrinsic BFM result is also available as
+`face_albedo.ply` and `rendered_intrinsic.png`.
 
 ### Dense geometry refinement
 
@@ -323,10 +301,9 @@ photometric weights. An update is accepted only if the combined objective
 decreases and landmark RMSE remains within 5% of its starting value.
 
 After geometry refinement, visibility is recomputed at full resolution and
-albedo/illumination are fitted again. `dense_refinement.txt` records the loss
-components before and after refinement. The pre-refinement appearance and its
-report are preserved under `initial_appearance/`, so the refined and original
-solutions can be compared directly.
+albedo/illumination are fitted again. With `--diagnostics`,
+`dense_refinement.txt` records the loss components and the pre-refinement
+appearance is preserved under `initial_appearance/`.
 
 This stage generally provides a modest improvement rather than a photographic
 identity match: low-dimensional BFM geometry cannot reproduce hair, iris
@@ -347,11 +324,11 @@ Useful fitting options:
 --verbose-optimization
 ```
 
-Open `face.off` directly in MeshLab. For visual comparison, open
-`face_aligned.ply`, enable vertex colors in MeshLab, or render it:
+Open `face.off` directly in MeshLab. For visual comparison, open `face.ply`,
+enable vertex colors in MeshLab, or render it:
 
 ```bash
-./build/landmark_viewer reconstructions/face/face_aligned.ply \
+./build/landmark_viewer reconstructions/face/face.ply \
   --render-all reconstructions/face/renders
 ```
 
@@ -463,10 +440,10 @@ Render all four modes from the same camera:
   --render-all /tmp/basic_rendering
 ```
 
-To render the BFM mean albedo after exporting it, pass its colored PLY file:
+To render the reconstructed photo-colored mesh:
 
 ```bash
-./build/landmark_viewer reconstructions/face/face_aligned.ply \
+./build/landmark_viewer reconstructions/face/face.ply \
   --render-all reconstructions/face/renders
 ```
 

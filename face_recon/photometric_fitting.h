@@ -12,6 +12,7 @@
 namespace face_recon {
 
 struct PhotometricOptions {
+  bool save_diagnostics = false;
   int num_albedo_coefficients = 30;
   int pixel_stride = 2;
   int mask_erosion = 1;
