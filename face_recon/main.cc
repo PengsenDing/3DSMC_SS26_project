@@ -6,6 +6,7 @@
 #include "face_recon/fitting.h"
 #include "face_recon/image_fitting.h"
 #include "face_recon/mesh_export.h"
+#include "face_recon/rasterizer.h"
 #include "face_reconstruction/landmarks.hpp"
 
 #include <CLI/CLI.hpp>
@@ -151,6 +152,12 @@ int main(int argc, char* argv[]) {
     const std::filesystem::path overlay_path =
         std::filesystem::path(output_dir) /
         (compact_output ? "overlay.png" : stem + "_fitting_overlay.png");
+    const std::filesystem::path raster_depth_path =
+        std::filesystem::path(output_dir) /
+        (compact_output ? "raster_depth.png" : stem + "_raster_depth.png");
+    const std::filesystem::path visibility_path =
+        std::filesystem::path(output_dir) /
+        (compact_output ? "visibility.png" : stem + "_visibility.png");
 
     if (!result.usable) {
       std::cerr << "[ERROR] Ceres did not produce a usable fitting result.\n";
@@ -158,9 +165,15 @@ int main(int argc, char* argv[]) {
     }
     Eigen::VectorXd fitted_colors;
     const Eigen::VectorXd* fitted_colors_pointer = nullptr;
+    std::optional<face_recon::RasterizationResult> rasterization;
     if (image_path.has_value()) {
-      fitted_colors = face_recon::SampleVertexColorsFromImage(
-          *image_path, result.vertices, result.camera, model.color().mean);
+      const Eigen::Vector2i image_size =
+          face_recon::ReadImageSize(*image_path);
+      rasterization = face_recon::RasterizeMesh(
+          result.vertices, model.triangles(), result.camera,
+          image_size.x(), image_size.y());
+      fitted_colors = face_recon::SampleVisibleVertexColorsFromImage(
+          *image_path, result.vertices, *rasterization, model.color().mean);
       fitted_colors_pointer = &fitted_colors;
     }
     const Eigen::VectorXd aligned_vertices =
@@ -180,6 +193,13 @@ int main(int argc, char* argv[]) {
     if (image_path.has_value() &&
         !face_recon::SaveReprojectionOverlay(
             *image_path, result, overlay_path.string())) {
+      return 1;
+    }
+    if (rasterization.has_value() &&
+        (!face_recon::SaveRasterDepthImage(
+             *rasterization, raster_depth_path.string()) ||
+         !face_recon::SaveVisibilityImage(
+             *rasterization, visibility_path.string()))) {
       return 1;
     }
     std::cout << "[SUCCESS] Personalized reconstruction written to "

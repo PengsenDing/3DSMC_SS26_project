@@ -2,6 +2,7 @@
 #define FACE_RECON_IMAGE_FITTING_H_
 
 #include "face_recon/fitting.h"
+#include "face_recon/rasterizer.h"
 
 #include <Eigen/Core>
 
@@ -9,11 +10,18 @@
 
 namespace face_recon {
 
-Eigen::VectorXd SampleVertexColorsFromImage(
+Eigen::Vector2i ReadImageSize(const std::string& image_path);
+
+Eigen::VectorXd SampleVisibleVertexColorsFromImage(
     const std::string& image_path,
     const Eigen::VectorXd& vertices,
-    const CameraParameters& camera,
+    const RasterizationResult& rasterization,
     const Eigen::VectorXd& fallback_colors);
+
+bool SaveRasterDepthImage(const RasterizationResult& rasterization,
+                          const std::string& output_path);
+bool SaveVisibilityImage(const RasterizationResult& rasterization,
+                         const std::string& output_path);
 
 bool SaveReprojectionOverlay(const std::string& image_path,
                              const FittingResult& result,

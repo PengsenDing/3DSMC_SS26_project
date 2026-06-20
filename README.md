@@ -60,6 +60,8 @@ reconstructions/face/
 ├── fitting.txt
 ├── reprojections.csv
 ├── overlay.png
+├── raster_depth.png
+├── visibility.png
 ├── run.json
 └── renders/                 # only with --render
     ├── albedo.png
@@ -71,6 +73,8 @@ reconstructions/face/
 - Open `face.off` in MeshLab to inspect geometry.
 - Open `face_aligned.ply` to inspect the photo-colored fitted mesh.
 - Check `overlay.png` before judging the reconstruction quality.
+- Check `raster_depth.png` and `visibility.png` when projected colors look
+  incorrect.
 - Re-running the same image updates the same directory instead of scattering
   additional files around the repository.
 
@@ -140,9 +144,41 @@ their reprojection residuals. Normalized PCA coefficients are constrained to
 three standard deviations.
 
 When `--image` is supplied, the fitted camera projects every mesh vertex into
-the input photograph and samples a vertex color. These colors preserve
+the input photograph and samples a vertex color. A CPU triangle rasterizer
+first computes a Z-buffer, triangle IDs, and barycentric coordinates for every
+covered image pixel. Only vertices consistent with the visible Z-buffer
+surface receive photo colors; occluded vertices retain BFM albedo. This avoids
+painting background or clothing onto hidden facial surfaces. The sampled
+colors preserve
 identity cues such as eyebrows, eye color, facial hair, and skin appearance.
 They are photo colors with baked-in illumination, not intrinsic albedo.
+
+### Why rasterization is required
+
+Projection alone answers where a 3D vertex lands in the image, but multiple
+surfaces can project to the same pixel. Rasterization evaluates complete
+triangles and resolves this ambiguity using depth:
+
+```text
+3D triangle
+→ projected screen triangle
+→ covered pixels and barycentric coordinates
+→ interpolated camera-space depth
+→ nearest surface selected by the Z-buffer
+```
+
+For the current frontal BFM convention, larger camera-space `z` is closer.
+Each output pixel stores:
+
+```text
+triangle ID
+depth
+barycentric coordinates
+```
+
+These buffers are required for visibility-aware texture sampling and will also
+provide the fixed pixel-to-surface correspondences needed by later dense
+photometric fitting.
 
 Useful fitting options:
 

@@ -109,6 +109,8 @@ add_library(
     face_recon/image_fitting.h
     face_recon/mesh_export.cc
     face_recon/mesh_export.h
+    face_recon/rasterizer.cc
+    face_recon/rasterizer.h
     src/landmarks.cpp
 )
 target_include_directories(
@@ -141,6 +143,11 @@ if(BUILD_TESTING)
     target_link_libraries(fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(fitting_test)
     add_test(NAME fitting_test COMMAND fitting_test)
+
+    add_executable(rasterizer_test tests/rasterizer_test.cpp)
+    target_link_libraries(rasterizer_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(rasterizer_test)
+    add_test(NAME rasterizer_test COMMAND rasterizer_test)
 endif()
 
 # OBJ viewer and MediaPipe landmark CSV tooling from landmark_detection.

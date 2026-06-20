@@ -154,6 +154,8 @@ def main() -> int:
             "fitting_report": "fitting.txt",
             "reprojections": "reprojections.csv",
             "overlay": "overlay.png",
+            "raster_depth": "raster_depth.png",
+            "visibility": "visibility.png",
         },
     }
     if args.render:

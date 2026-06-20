@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -48,31 +49,115 @@ Eigen::Vector3d FallbackColor(const Eigen::VectorXd& colors, int vertex) {
 
 }  // namespace
 
-Eigen::VectorXd SampleVertexColorsFromImage(
+Eigen::Vector2i ReadImageSize(const std::string& image_path) {
+  const cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
+  if (image.empty()) {
+    throw std::runtime_error("Could not read fitting image: " + image_path);
+  }
+  return Eigen::Vector2i(image.cols, image.rows);
+}
+
+Eigen::VectorXd SampleVisibleVertexColorsFromImage(
     const std::string& image_path,
     const Eigen::VectorXd& vertices,
-    const CameraParameters& camera,
+    const RasterizationResult& rasterization,
     const Eigen::VectorXd& fallback_colors) {
   const cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
   if (image.empty()) {
     throw std::runtime_error("Could not read fitting image: " + image_path);
   }
 
+  if (rasterization.width != image.cols ||
+      rasterization.height != image.rows ||
+      rasterization.projected_vertices.size() !=
+          static_cast<std::size_t>(vertices.size() / 3)) {
+    throw std::runtime_error(
+        "Rasterization dimensions do not match the fitting image or mesh");
+  }
+
+  const std::vector<bool> visible_vertices =
+      ComputeVisibleVertices(rasterization, 2.0f);
   Eigen::VectorXd colors(vertices.size());
   for (int vertex = 0; vertex < vertices.size() / 3; ++vertex) {
-    const Eigen::Vector3d point = vertices.segment<3>(3 * vertex);
-    const Eigen::Vector2d projected = ProjectVertex(point, camera);
-    const double x = projected.x() * static_cast<double>(image.cols - 1);
-    const double y = projected.y() * static_cast<double>(image.rows - 1);
-
     Eigen::Vector3d color = FallbackColor(fallback_colors, vertex);
-    if (x >= 0.0 && x <= image.cols - 1 &&
-        y >= 0.0 && y <= image.rows - 1) {
+    if (visible_vertices[vertex]) {
+      const Eigen::Vector2f& pixel =
+          rasterization.projected_vertices[vertex].pixel;
+      const double x = pixel.x();
+      const double y = pixel.y();
       color = BilinearRgb(image, x, y);
     }
     colors.segment<3>(3 * vertex) = color;
   }
   return colors;
+}
+
+bool SaveRasterDepthImage(const RasterizationResult& rasterization,
+                          const std::string& output_path) {
+  float minimum = std::numeric_limits<float>::infinity();
+  float maximum = -std::numeric_limits<float>::infinity();
+  for (const RasterPixel& pixel : rasterization.pixels) {
+    if (pixel.visible()) {
+      minimum = std::min(minimum, pixel.depth);
+      maximum = std::max(maximum, pixel.depth);
+    }
+  }
+  if (!std::isfinite(minimum) || !std::isfinite(maximum)) {
+    std::cerr << "[ERROR] Rasterization has no visible pixels.\n";
+    return false;
+  }
+
+  cv::Mat depth(rasterization.height, rasterization.width, CV_8UC1,
+                cv::Scalar(0));
+  const float range = std::max(maximum - minimum, 1.0e-6f);
+  for (int y = 0; y < rasterization.height; ++y) {
+    for (int x = 0; x < rasterization.width; ++x) {
+      const RasterPixel& pixel = rasterization.at(x, y);
+      if (pixel.visible()) {
+        // Brighter pixels are closer to the camera.
+        depth.at<unsigned char>(y, x) = static_cast<unsigned char>(
+            std::clamp(255.0f * (pixel.depth - minimum) / range,
+                       0.0f, 255.0f));
+      }
+    }
+  }
+
+  if (!std::filesystem::path(output_path).parent_path().empty()) {
+    std::filesystem::create_directories(
+        std::filesystem::path(output_path).parent_path());
+  }
+  if (!cv::imwrite(output_path, depth)) {
+    std::cerr << "[ERROR] Could not save raster depth image: "
+              << output_path << "\n";
+    return false;
+  }
+  std::cout << "[SUCCESS] Saved raster depth image: " << output_path << "\n";
+  return true;
+}
+
+bool SaveVisibilityImage(const RasterizationResult& rasterization,
+                         const std::string& output_path) {
+  cv::Mat visibility(rasterization.height, rasterization.width, CV_8UC1,
+                     cv::Scalar(0));
+  for (int y = 0; y < rasterization.height; ++y) {
+    for (int x = 0; x < rasterization.width; ++x) {
+      if (rasterization.at(x, y).visible()) {
+        visibility.at<unsigned char>(y, x) = 255;
+      }
+    }
+  }
+
+  if (!std::filesystem::path(output_path).parent_path().empty()) {
+    std::filesystem::create_directories(
+        std::filesystem::path(output_path).parent_path());
+  }
+  if (!cv::imwrite(output_path, visibility)) {
+    std::cerr << "[ERROR] Could not save visibility image: "
+              << output_path << "\n";
+    return false;
+  }
+  std::cout << "[SUCCESS] Saved visibility image: " << output_path << "\n";
+  return true;
 }
 
 bool SaveReprojectionOverlay(const std::string& image_path,
