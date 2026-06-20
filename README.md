@@ -1,87 +1,56 @@
 # Face Reconstruction
 
-Classical optimization based face reconstruction project for the IN2354 3D Scanning and Motion Capture course.
+Classical optimization-based 3D face reconstruction for the TUM IN2354 3D
+Scanning and Motion Capture course.
 
-## Dependencies
+The repository combines two parts of the reconstruction pipeline:
 
-The project currently links the dependencies needed for the planned reconstruction pipeline:
+- Basel Face Model 2019 loading and inspection.
+- MediaPipe landmark detection, correspondence loading, and an OBJ viewer.
 
-- Eigen 3.4.0: matrix/vector math and linear algebra.
-- OpenCV 4.11.0: image loading, image processing, and later RGB/RGB-D input handling.
-- Ceres Solver 2.2.0: nonlinear least squares optimization for later alignment and model fitting.
-- OpenGL: rendering backend for the week-1 face model viewer.
-- GLEW 2.2.0 package: OpenGL extension loading. The installed headers report 2.3.4.
-- SFML 3.0.2: window creation and OpenGL context management.
+## Build
 
-GLFW is not currently installed on this machine, so SFML is used as the window/context layer.
-
-
-## Project Layout
-
-```text
-.
-├── CMakeLists.txt
-├── data/
-│   └── model.obj
-├── inputs/
-├── include/
-│   └── face_reconstruction/
-│       ├── app.hpp
-│       ├── landmarks.hpp
-│       ├── mesh.hpp
-│       ├── obj_loader.hpp
-│       └── viewer.hpp
-├── outputs/
-├── requirements.txt
-├── scripts/
-│   └── detect_landmarks.py
-├── src/
-│   ├── app.cpp
-│   ├── landmarks.cpp
-│   ├── mesh.cpp
-│   ├── obj_loader.cpp
-│   ├── viewer.cpp
-│   └── main.cpp
-```
-
-## File Overview
-
-- `CMakeLists.txt`: defines the C++20 project, finds dependencies, builds the core library, and builds the executable.
-- `include/face_reconstruction/app.hpp`: declares the top-level application functions.
-- `src/app.cpp`: handles command-line options, loads meshes, prints dependency/mesh info, and starts the viewer.
-- `src/main.cpp`: small program entry point with error handling.
-- `include/face_reconstruction/landmarks.hpp`: defines the 2D landmark data structure and CSV loading API.
-- `src/landmarks.cpp`: loads MediaPipe landmark CSV files and prints summary statistics for C++ handoff checks.
-- `include/face_reconstruction/mesh.hpp`: defines the `Mesh` and `Triangle` data structures.
-- `src/mesh.cpp`: implements mesh helper functions such as center, extent, bounding radius, and summary output.
-- `include/face_reconstruction/obj_loader.hpp`: declares the OBJ loading function.
-- `src/obj_loader.cpp`: reads OBJ files, parses vertices/faces, supports common OBJ face formats, and triangulates polygon faces.
-- `include/face_reconstruction/viewer.hpp`: declares viewer options and the viewer entry point.
-- `src/viewer.cpp`: creates the SFML/OpenGL window, renders the mesh without lighting, and implements rotate/pan/zoom controls.
-- `data/model.obj`: low-poly placeholder face mesh for the Week 1 demo.
-- `scripts/detect_landmarks.py`: detects MediaPipe FaceMesh landmarks in one input image and writes CSV/debug-image outputs.
-- `requirements.txt`: pins the Python preprocessing dependencies tested with this project.
-- `inputs/`: local input images for landmark preprocessing. Contents are ignored by Git.
-- `outputs/`: generated landmark CSV files and debug overlays. Contents are ignored by Git.
-- `.gitignore`: keeps generated build files out of version control.
-
-## Replacing the Placeholder Mesh
-
-`data/model.obj` is only a low-poly placeholder. Once the Basel Face Model data is available, convert/export a neutral face mesh to OBJ and replace the file or pass the exported path explicitly:
+The C++ project requires Eigen, Ceres Solver, glog, HDF5, OpenCV, OpenGL,
+GLEW, and SFML. CMake downloads CLI11, HighFive, and nlohmann/json during the
+first configuration.
 
 ```bash
-./build/face_reconstruction path/to/neutral_face.obj
+cmake -S . -B build
+cmake --build build --parallel
 ```
 
-## Image Landmark Preprocessing
+The build produces two executables:
 
-The reconstruction pipeline uses a Python preprocessing step for 2D face landmarks before
-the C++ optimization code consumes them. This keeps MediaPipe's ML dependency separate
-from the C++ geometry and fitting code.
+- `build/face_reconstruction`: loads and inspects the Basel Face Model.
+- `build/landmark_viewer`: loads OBJ meshes and landmark/correspondence CSVs.
 
-### Setup
+## Basel Face Model
 
-Create a virtual environment and install the Python dependencies:
+Download `model2019_face12.h5` from the
+[BFM 2019 website](https://faces.dmi.unibas.ch/bfm/bfm2019.html) and place it
+at:
+
+```text
+data/model2019_face12.h5
+```
+
+Inspect the model and export validation files:
+
+```bash
+./build/face_reconstruction --check-bfm
+```
+
+Useful options:
+
+```text
+-c, --check-bfm     Print model dimensions and export validation files
+-m, --model PATH    Override the BFM HDF5 path
+-o, --output DIR    Choose the output directory (default: results)
+```
+
+## Landmark Detection
+
+Create a Python environment and install the preprocessing dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -89,19 +58,9 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The preprocessing script uses MediaPipe's FaceMesh API from the Python package, so no
-separate `.task` model download is required for this step.
-
-Put a face image in `inputs/`, for example:
-
-```text
-inputs/face.jpg
-```
-
-### Run Landmark Detection
+Put an input image in `inputs/`, then run:
 
 ```bash
-source .venv/bin/activate
 python scripts/detect_landmarks.py \
   --image inputs/face.jpg \
   --csv outputs/face_landmarks.csv \
@@ -110,86 +69,46 @@ python scripts/detect_landmarks.py \
   --debug outputs/face_landmarks.png
 ```
 
-Expected output:
-
-```text
-Detected 478 landmarks
-Saved CSV: outputs/face_landmarks.csv
-Saved TXT: outputs/face_landmarks.txt
-Saved BFM CSV: outputs/bfm_mediapipe_landmarks.csv
-Saved debug image: outputs/face_landmarks.png
-```
-
-The CSV format is intentionally simple for later C++ loading:
+The main CSV contains all detected MediaPipe landmarks:
 
 ```csv
 index,name,u,v,z_norm,x_norm,y_norm
 1,nose_tip,512.3,421.8,-0.038,0.500,0.412
 ```
 
-The optional TXT output contains the same landmark ids and coordinates in a
-tab-separated text format:
+The reusable BFM-to-MediaPipe mapping is stored in
+`data/bfm_mediapipe_correspondence.csv`. When `--bfm-csv` is supplied, the
+script joins the per-image detections with this mapping.
 
-```text
-# index	name	u	v	z_norm	x_norm	y_norm
-1	nose_tip	512.300000	421.800000	-0.038000	0.500000	0.412000
-```
+## Landmark and OBJ Verification
 
-`u` and `v` are the pixel coordinates in the input image, with `u` increasing to
-the right and `v` increasing downward.
-
-Only selected MediaPipe landmarks have semantic names such as `nose_tip`,
-`left_eye_outer_corner`, or `chin`; unnamed landmarks keep an empty `name` field
-but remain in the file with their numeric index.
-
-For BFM fitting, keep the reusable correspondence table separate from the
-per-image landmark detections:
-
-```csv
-bfm_landmark_name,bfm_vertex_id,mediapipe_index
-center.nose.tip,15841,1
-```
-
-The correspondence source is `data/bfm_mediapipe_correspondence.csv`. It maps each
-BFM landmark/vertex to a candidate MediaPipe index. The BFM vertex coordinates should
-come from the loaded BFM mesh by `bfm_vertex_id`, while the image coordinates come from
-`outputs/face_landmarks.csv`.
-
-If you pass `--bfm-csv`, the Python script writes a convenience per-image join of the
-correspondence table and detected MediaPipe coordinates:
-
-```csv
-bfm_landmark_name,bfm_vertex_id,mediapipe_index,mediapipe_name,u,v,z_norm,x_norm,y_norm
-center.nose.tip,15841,1,nose_tip,512.3,421.8,-0.038,0.500,0.412
-```
-
-Use `--max-points-to-label N` to label the first `N` landmark indices in the debug image
-when checking landmark-to-model correspondence.
-
-### Verify C++ Landmark Loading
-
-After generating a CSV, load it with the C++ executable:
+Load a mesh together with generated landmark data:
 
 ```bash
-cmake --build build
-./build/face_reconstruction \
+./build/landmark_viewer data/model.obj \
   --info \
   --landmarks outputs/face_landmarks.csv \
   --correspondences data/bfm_mediapipe_correspondence.csv
 ```
 
-This prints the mesh summary, the MediaPipe landmark count/ranges, and the
-BFM/MediaPipe correspondence count/ranges. It is the handoff point between Python
-landmark detection and later C++ fitting.
+Other useful viewer options:
 
-## Week 1 Progress
+```text
+--deps       Print linked dependency versions
+--frames N   Render N frames and exit
+--info       Print summaries without opening a window
+--help       Show all options
+```
 
-The first project milestone is to set up a working C++ project and prepare the dependencies needed to load and display a face model without lighting.
+## Project Layout
 
-The Week 1 goal was project setup plus face model loading and display without lighting. The current implementation completes that goal with a minimal but working pipeline:
-
-1. CMake configures and builds the project.
-2. The executable loads an OBJ mesh from disk.
-3. The loader prints mesh statistics for quick verification.
-4. The viewer displays the loaded mesh with unlit OpenGL rendering.
-5. A placeholder face-like OBJ is included so the demo works before the real Basel Face Model export is available.
+```text
+face_recon/    Basel Face Model loader and command-line entry point
+include/       Headers for landmark loading, mesh loading, and viewing
+src/           Landmark/viewer C++ implementation
+scripts/       Python MediaPipe preprocessing
+data/          Model assets and landmark correspondence table
+inputs/        Local source images
+outputs/       Generated landmark files and debug images
+results/       Generated BFM meshes and reports
+```

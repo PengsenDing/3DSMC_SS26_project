@@ -1,14 +1,27 @@
+# Build products and editor files
 build/
-.DS_Store
-.venv/
 .cache/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python environment and caches
+.venv/
 __pycache__/
 *.pyc
 
-# Local preprocessing data and downloaded model bundles.
+# Local dependency bundles and downloaded data
+libs/
 models/*
 !models/.gitkeep
+data/*
+!data/.gitkeep
+!data/model.obj
+!data/bfm_mediapipe_correspondence.csv
+
+# Local inputs and generated results
 inputs/*
 !inputs/.gitkeep
 outputs/*
 !outputs/.gitkeep
+results/
