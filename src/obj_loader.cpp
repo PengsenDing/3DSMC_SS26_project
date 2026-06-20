@@ -71,6 +71,18 @@ Mesh load_obj_mesh(const std::filesystem::path& path) {
                                          ": invalid vertex record");
             }
             mesh.vertices.push_back(vertex);
+
+            Eigen::Vector3f color;
+            if (line_stream >> color.x() >> color.y() >> color.z()) {
+                if (color.maxCoeff() > 1.0f) {
+                    color /= 255.0f;
+                }
+                mesh.colors.push_back(color.cwiseMax(0.0f).cwiseMin(1.0f));
+            } else if (!mesh.colors.empty()) {
+                throw std::runtime_error(
+                    "OBJ mixes colored and uncolored vertex records at line " +
+                    std::to_string(line_number));
+            }
             continue;
         }
 
@@ -97,7 +109,11 @@ Mesh load_obj_mesh(const std::filesystem::path& path) {
     if (mesh.empty()) {
         throw std::runtime_error("OBJ mesh has no renderable triangles: " + path.string());
     }
+    if (!mesh.colors.empty() && mesh.colors.size() != mesh.vertices.size()) {
+        throw std::runtime_error("OBJ must provide colors for either every vertex or no vertices");
+    }
 
+    compute_vertex_normals(mesh);
     return mesh;
 }
 

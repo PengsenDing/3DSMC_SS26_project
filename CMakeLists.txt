@@ -11,6 +11,8 @@ project(
     LANGUAGES C CXX
 )
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -99,15 +101,47 @@ target_link_libraries(
 )
 face_reconstruction_enable_warnings(bfm_model)
 
+add_library(
+    reconstruction_fitting
+    face_recon/fitting.cc
+    face_recon/fitting.h
+    face_recon/image_fitting.cc
+    face_recon/image_fitting.h
+    face_recon/mesh_export.cc
+    face_recon/mesh_export.h
+    src/landmarks.cpp
+)
+target_include_directories(
+    reconstruction_fitting
+    PUBLIC
+        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/include"
+)
+target_link_libraries(
+    reconstruction_fitting
+    PUBLIC
+        bfm_model
+        Ceres::ceres
+        Eigen3::Eigen
+        PkgConfig::OpenCV
+)
+face_reconstruction_enable_warnings(reconstruction_fitting)
+
 add_executable(face_reconstruction face_recon/main.cc)
 target_link_libraries(
     face_reconstruction
     PRIVATE
-        bfm_model
-        Ceres::ceres
+        reconstruction_fitting
         CLI11::CLI11
 )
 face_reconstruction_enable_warnings(face_reconstruction)
+
+if(BUILD_TESTING)
+    add_executable(fitting_test tests/fitting_test.cpp)
+    target_link_libraries(fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(fitting_test)
+    add_test(NAME fitting_test COMMAND fitting_test)
+endif()
 
 # OBJ viewer and MediaPipe landmark CSV tooling from landmark_detection.
 add_library(
@@ -116,6 +150,7 @@ add_library(
     src/landmarks.cpp
     src/mesh.cpp
     src/obj_loader.cpp
+    src/ply_loader.cpp
     src/viewer.cpp
 )
 target_include_directories(

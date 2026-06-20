@@ -19,40 +19,8 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(CACHE_DIR / "matplotlib"))
 os.environ.setdefault("XDG_CACHE_HOME", str(CACHE_DIR))
 
-LANDMARK_NAMES = {
-    1: "nose_tip",
-    0: "upper_lip_outer_center",
-    2: "nose_base_center",
-    4: "nose_bottom",
-    10: "forehead_center",
-    33: "right_eye_outer_corner",
-    61: "right_mouth_corner",
-    133: "right_eye_inner_corner",
-    145: "right_eye_lower_lid",
-    152: "chin",
-    159: "right_eye_upper_lid",
-    234: "right_cheek_outer",
-    263: "left_eye_outer_corner",
-    267: "left_upper_lip_philtrum_ridge",
-    282: "left_eyebrow_lower_bend",
-    285: "left_eyebrow_inner_lower",
-    291: "left_mouth_corner",
-    294: "left_nose_wing_tip",
-    295: "left_eyebrow_upper_bend",
-    326: "left_nostril_center",
-    327: "left_nose_wing_outer",
-    336: "left_eyebrow_inner_upper",
-    362: "left_eye_inner_corner",
-    374: "left_eye_lower_lid",
-    386: "left_eye_upper_lid",
-    429: "left_nasolabial_fold_center",
-    432: "left_nasolabial_fold_bottom",
-    454: "left_cheek_outer",
-    468: "right_iris_center",
-    473: "left_iris_center",
-}
-
 DEFAULT_BFM_CORRESPONDENCES = PROJECT_ROOT / "data" / "bfm_mediapipe_correspondence.csv"
+DEFAULT_DEBUG_DIRECTORY = PROJECT_ROOT / "reconstructions" / "_landmark_debug"
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "--csv",
-        default=Path("outputs/face_landmarks.csv"),
+        default=DEFAULT_DEBUG_DIRECTORY / "landmarks.csv",
         type=Path,
         help="Output CSV path.",
     )
@@ -90,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--debug",
-        default=Path("outputs/face_landmarks.png"),
+        default=DEFAULT_DEBUG_DIRECTORY / "landmarks.png",
         type=Path,
         help="Output debug image path with landmarks drawn on top.",
     )
@@ -152,7 +120,13 @@ def draw_landmarks(
     return debug_image
 
 
-def write_landmarks_csv(csv_path: Path, landmarks, width: int, height: int) -> None:
+def write_landmarks_csv(
+    csv_path: Path,
+    landmarks,
+    width: int,
+    height: int,
+    landmark_names: dict[int, str],
+) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     with csv_path.open("w", newline="", encoding="utf-8") as file:
@@ -163,7 +137,7 @@ def write_landmarks_csv(csv_path: Path, landmarks, width: int, height: int) -> N
             writer.writerow(
                 [
                     index,
-                    LANDMARK_NAMES.get(index, ""),
+                    landmark_names.get(index, ""),
                     landmark.x * width,
                     landmark.y * height,
                     landmark.z,
@@ -173,7 +147,13 @@ def write_landmarks_csv(csv_path: Path, landmarks, width: int, height: int) -> N
             )
 
 
-def write_landmarks_txt(txt_path: Path, landmarks, width: int, height: int) -> None:
+def write_landmarks_txt(
+    txt_path: Path,
+    landmarks,
+    width: int,
+    height: int,
+    landmark_names: dict[int, str],
+) -> None:
     txt_path.parent.mkdir(parents=True, exist_ok=True)
 
     with txt_path.open("w", encoding="utf-8") as file:
@@ -182,7 +162,7 @@ def write_landmarks_txt(txt_path: Path, landmarks, width: int, height: int) -> N
         for index, landmark in enumerate(landmarks):
             file.write(
                 f"{index}\t"
-                f"{LANDMARK_NAMES.get(index, '')}\t"
+                f"{landmark_names.get(index, '')}\t"
                 f"{landmark.x * width:.6f}\t"
                 f"{landmark.y * height:.6f}\t"
                 f"{landmark.z:.6f}\t"
@@ -208,6 +188,25 @@ def load_bfm_correspondences(correspondence_path: Path) -> list[dict[str, str]]:
             raise RuntimeError(f"BFM correspondence CSV is missing columns: {missing}")
 
         return list(reader)
+
+
+def build_landmark_name_map(
+    correspondences: list[dict[str, str]],
+) -> dict[int, str]:
+    landmark_names: dict[int, str] = {}
+
+    for row in correspondences:
+        mediapipe_index = int(row["mediapipe_index"])
+        name = row["bfm_landmark_name"]
+        existing_name = landmark_names.get(mediapipe_index)
+        if existing_name is not None and existing_name != name:
+            raise RuntimeError(
+                "MediaPipe index "
+                f"{mediapipe_index} maps to both {existing_name!r} and {name!r}"
+            )
+        landmark_names[mediapipe_index] = name
+
+    return landmark_names
 
 
 def write_bfm_landmarks_csv(
@@ -255,50 +254,75 @@ def write_bfm_landmarks_csv(
                     row["bfm_landmark_name"],
                     row["bfm_vertex_id"],
                     mediapipe_index,
-                    LANDMARK_NAMES.get(mediapipe_index, ""),
+                    row["bfm_landmark_name"],
                     *coordinate_values,
                 ]
             )
 
 
-def main() -> int:
-    args = parse_args()
-    require_input_files(args.image)
+def run_detection(
+    image_path: Path,
+    csv_path: Path,
+    debug_path: Path,
+    correspondence_path: Path = DEFAULT_BFM_CORRESPONDENCES,
+    txt_path: Path | None = None,
+    bfm_csv_path: Path | None = None,
+    max_points_to_label: int = 0,
+) -> int:
+    """Run MediaPipe once and write the requested landmark artifacts."""
+    require_input_files(image_path)
 
     import cv2
     import mediapipe as mp
 
-    image_bgr = cv2.imread(str(args.image), cv2.IMREAD_COLOR)
+    image_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image_bgr is None:
-        raise RuntimeError(f"OpenCV could not read image: {args.image}")
+        raise RuntimeError(f"OpenCV could not read image: {image_path}")
 
     height, width = image_bgr.shape[:2]
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     landmarks = detect_landmarks(image_rgb, mp)
-
     if not landmarks:
-        raise RuntimeError(f"No face landmarks detected in image: {args.image}")
+        raise RuntimeError(f"No face landmarks detected in image: {image_path}")
 
-    write_landmarks_csv(args.csv, landmarks, width, height)
-    if args.txt:
-        write_landmarks_txt(args.txt, landmarks, width, height)
-    if args.bfm_csv:
-        correspondences = load_bfm_correspondences(args.bfm_correspondences)
-        write_bfm_landmarks_csv(args.bfm_csv, correspondences, landmarks, width, height)
+    correspondences = load_bfm_correspondences(correspondence_path)
+    landmark_names = build_landmark_name_map(correspondences)
+    write_landmarks_csv(csv_path, landmarks, width, height, landmark_names)
+    if txt_path:
+        write_landmarks_txt(txt_path, landmarks, width, height, landmark_names)
+    if bfm_csv_path:
+        write_bfm_landmarks_csv(
+            bfm_csv_path, correspondences, landmarks, width, height
+        )
 
-    args.debug.parent.mkdir(parents=True, exist_ok=True)
+    debug_path.parent.mkdir(parents=True, exist_ok=True)
     debug_image = draw_landmarks(
         image_bgr,
         landmarks,
         width,
         height,
-        max(0, args.max_points_to_label),
+        max(0, max_points_to_label),
         cv2,
     )
-    if not cv2.imwrite(str(args.debug), debug_image):
-        raise RuntimeError(f"OpenCV could not write debug image: {args.debug}")
+    if not cv2.imwrite(str(debug_path), debug_image):
+        raise RuntimeError(f"OpenCV could not write debug image: {debug_path}")
 
-    print(f"Detected {len(landmarks)} landmarks")
+    return len(landmarks)
+
+
+def main() -> int:
+    args = parse_args()
+    landmark_count = run_detection(
+        image_path=args.image,
+        csv_path=args.csv,
+        debug_path=args.debug,
+        correspondence_path=args.bfm_correspondences,
+        txt_path=args.txt,
+        bfm_csv_path=args.bfm_csv,
+        max_points_to_label=args.max_points_to_label,
+    )
+
+    print(f"Detected {landmark_count} landmarks")
     print(f"Saved CSV: {args.csv}")
     if args.txt:
         print(f"Saved TXT: {args.txt}")

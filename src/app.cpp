@@ -5,6 +5,7 @@
 #include "face_reconstruction/landmarks.hpp"
 #include "face_reconstruction/mesh.hpp"
 #include "face_reconstruction/obj_loader.hpp"
+#include "face_reconstruction/ply_loader.hpp"
 #include "face_reconstruction/viewer.hpp"
 
 #include <GL/glew.h>
@@ -14,6 +15,8 @@
 
 #include <Eigen/Dense>
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -26,16 +29,36 @@ namespace {
 
 void print_usage(const char* executable_name) {
     std::cout << "Usage: " << executable_name
-              << " [mesh.obj] [--info] [--frames N] [--landmarks landmarks.csv]"
+              << " [mesh.obj|mesh.ply] [--info] [--frames N] [--mode MODE]"
+                 " [--output image.png] [--render-all DIR] [--landmarks landmarks.csv]"
                  " [--correspondences correspondences.csv]\n\n";
     std::cout << "Arguments:\n";
-    std::cout << "  mesh.obj  OBJ mesh to load. Defaults to data/model.obj.\n";
+    std::cout << "  mesh path  OBJ or ASCII PLY mesh. Defaults to data/model.obj.\n";
     std::cout << "  --info    Load the mesh and print its summary without opening a window.\n";
     std::cout << "  --frames  Render N frames and exit. Useful for viewer smoke tests.\n";
+    std::cout << "  --mode    Initial mode: albedo, depth, normal, or checkerboard.\n";
+    std::cout << "  --output  Save the initial mode to a PNG and exit.\n";
+    std::cout << "  --render-all  Save all four modes as PNG files in a directory and exit.\n";
     std::cout << "  --landmarks  Load a MediaPipe landmark CSV and print its summary.\n";
     std::cout << "  --correspondences  Load a BFM/MediaPipe correspondence CSV summary.\n";
     std::cout << "  --deps    Print the linked dependency report.\n";
     std::cout << "  --help    Show this help text.\n";
+}
+
+Mesh load_mesh(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (extension == ".obj") {
+        return load_obj_mesh(path);
+    }
+    if (extension == ".ply") {
+        return load_ply_mesh(path);
+    }
+    throw std::runtime_error("Unsupported mesh format '" + extension +
+                             "' (expected .obj or .ply)");
 }
 
 }  // namespace
@@ -94,6 +117,30 @@ int run(int argc, char** argv) {
             continue;
         }
 
+        if (argument == "--mode") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--mode requires a mode name");
+            }
+            viewer_options.initial_mode = parse_render_mode(argv[++i]);
+            continue;
+        }
+
+        if (argument == "--output") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--output requires an image path");
+            }
+            viewer_options.screenshot_path = argv[++i];
+            continue;
+        }
+
+        if (argument == "--render-all") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--render-all requires an output directory");
+            }
+            viewer_options.render_all_directory = argv[++i];
+            continue;
+        }
+
         if (argument == "--landmarks") {
             if (i + 1 >= argc) {
                 throw std::runtime_error("--landmarks requires a CSV path");
@@ -117,7 +164,12 @@ int run(int argc, char** argv) {
         mesh_path = argument;
     }
 
-    const Mesh mesh = load_obj_mesh(mesh_path);
+    if (viewer_options.screenshot_path.has_value() &&
+        viewer_options.render_all_directory.has_value()) {
+        throw std::runtime_error("--output and --render-all cannot be used together");
+    }
+
+    const Mesh mesh = load_mesh(mesh_path);
     std::cout << mesh_summary(mesh);
 
     if (landmarks_path.has_value()) {
