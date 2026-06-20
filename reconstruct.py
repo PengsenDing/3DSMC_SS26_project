@@ -61,6 +61,47 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print Ceres iteration details",
     )
+    parser.add_argument(
+        "--albedo-components",
+        type=int,
+        default=30,
+        help="Number of BFM albedo PCA coefficients",
+    )
+    parser.add_argument(
+        "--photometric-stride",
+        type=int,
+        default=2,
+        help="Use every Nth visible pixel during appearance fitting",
+    )
+    parser.add_argument(
+        "--texture-stride",
+        type=int,
+        default=1,
+        help="Use every Nth visible pixel during direct RGB texture fitting",
+    )
+    parser.add_argument(
+        "--texture-prior",
+        type=float,
+        default=0.02,
+        help="Weight retaining initialized vertex colors",
+    )
+    parser.add_argument(
+        "--texture-smoothness",
+        type=float,
+        default=0.01,
+        help="Mesh-edge smoothness weight for fitted vertex colors",
+    )
+    parser.add_argument(
+        "--no-dense-refinement",
+        action="store_true",
+        help="Skip dense identity/expression refinement",
+    )
+    parser.add_argument(
+        "--dense-resolution",
+        type=int,
+        default=192,
+        help="Maximum image dimension for dense geometry refinement",
+    )
     return parser.parse_args()
 
 
@@ -120,7 +161,21 @@ def main() -> int:
         str(run_directory),
         "--output-name",
         "face",
+        "--albedo-components",
+        str(args.albedo_components),
+        "--photometric-stride",
+        str(args.photometric_stride),
+        "--texture-stride",
+        str(args.texture_stride),
+        "--texture-prior",
+        str(args.texture_prior),
+        "--texture-smoothness",
+        str(args.texture_smoothness),
+        "--dense-resolution",
+        str(args.dense_resolution),
     ]
+    if args.no_dense_refinement:
+        fitting_command.append("--no-dense-refinement")
     if args.verbose_optimization:
         fitting_command.append("--verbose-optimization")
     run_command(fitting_command)
@@ -156,8 +211,34 @@ def main() -> int:
             "overlay": "overlay.png",
             "raster_depth": "raster_depth.png",
             "visibility": "visibility.png",
+            "intrinsic_albedo_mesh": "face_albedo.ply",
+            "photometric_report": "photometric.txt",
+            "texture_fitting_report": "texture_fitting.txt",
+            "photometric_mask": "photometric_mask.png",
+            "texture_mask": "texture_mask.png",
+            "mean_albedo_render": "mean_albedo_render.png",
+            "estimated_albedo": "estimated_albedo.png",
+            "camera_normal": "camera_normal.png",
+            "rendered_initial": "rendered_initial.png",
+            "rendered_illumination": "rendered_illumination.png",
+            "rendered_intrinsic": "rendered_intrinsic.png",
+            "rendered_intrinsic_overlay": "rendered_intrinsic_overlay.png",
+            "rendered_final": "rendered_final.png",
+            "rendered_final_overlay": "rendered_final_overlay.png",
+            "photometric_residual": "photometric_residual.png",
+            "texture_residual": "texture_residual.png",
         },
     }
+    if not args.no_dense_refinement:
+        manifest["artifacts"].update(
+            {
+                "dense_refinement_report": "dense_refinement.txt",
+                "target_silhouette": "target_silhouette.png",
+                "refined_silhouette": "refined_silhouette.png",
+                "refined_geometry_overlay": "refined_geometry_overlay.png",
+                "initial_appearance": "initial_appearance/",
+            }
+        )
     if args.render:
         manifest["artifacts"]["renders"] = "renders/"
     (run_directory / "run.json").write_text(

@@ -424,6 +424,13 @@ ceres::Solver::Summary SolveProblem(ceres::Problem& problem,
   return summary;
 }
 
+std::array<double, 6> CameraArray(const CameraParameters& camera) {
+  return {camera.angle_axis.x(), camera.angle_axis.y(), camera.angle_axis.z(),
+          std::log(camera.scale), camera.translation_x, camera.translation_y};
+}
+
+}  // namespace
+
 Eigen::VectorXd GenerateVertices(const BfmModel& model,
                                  const Eigen::VectorXd& shape,
                                  const Eigen::VectorXd& expression) {
@@ -442,13 +449,6 @@ Eigen::VectorXd GenerateVertices(const BfmModel& model,
          model.expression().pca_basis.leftCols(expression.size()) *
              scaled_expression;
 }
-
-std::array<double, 6> CameraArray(const CameraParameters& camera) {
-  return {camera.angle_axis.x(), camera.angle_axis.y(), camera.angle_axis.z(),
-          std::log(camera.scale), camera.translation_x, camera.translation_y};
-}
-
-}  // namespace
 
 FittingResult FitBfmToLandmarks(
     const BfmModel& model,

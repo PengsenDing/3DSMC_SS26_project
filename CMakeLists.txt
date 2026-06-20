@@ -105,12 +105,18 @@ add_library(
     reconstruction_fitting
     face_recon/fitting.cc
     face_recon/fitting.h
+    face_recon/dense_refinement.cc
+    face_recon/dense_refinement.h
     face_recon/image_fitting.cc
     face_recon/image_fitting.h
     face_recon/mesh_export.cc
     face_recon/mesh_export.h
+    face_recon/photometric_fitting.cc
+    face_recon/photometric_fitting.h
     face_recon/rasterizer.cc
     face_recon/rasterizer.h
+    face_recon/texture_fitting.cc
+    face_recon/texture_fitting.h
     src/landmarks.cpp
 )
 target_include_directories(
@@ -148,6 +154,16 @@ if(BUILD_TESTING)
     target_link_libraries(rasterizer_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(rasterizer_test)
     add_test(NAME rasterizer_test COMMAND rasterizer_test)
+
+    add_executable(photometric_fitting_test tests/photometric_fitting_test.cpp)
+    target_link_libraries(photometric_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(photometric_fitting_test)
+    add_test(NAME photometric_fitting_test COMMAND photometric_fitting_test)
+
+    add_executable(texture_fitting_test tests/texture_fitting_test.cpp)
+    target_link_libraries(texture_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(texture_fitting_test)
+    add_test(NAME texture_fitting_test COMMAND texture_fitting_test)
 endif()
 
 # OBJ viewer and MediaPipe landmark CSV tooling from landmark_detection.

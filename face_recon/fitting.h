@@ -63,6 +63,9 @@ FittingResult FitBfmToLandmarks(
     const std::vector<face_reconstruction::BfmMediaPipeCorrespondence>& correspondences,
     const FittingOptions& options = {});
 
+Eigen::VectorXd GenerateVertices(const BfmModel& model,
+                                 const Eigen::VectorXd& shape,
+                                 const Eigen::VectorXd& expression);
 Eigen::Vector2d ProjectVertex(const Eigen::Vector3d& vertex,
                               const CameraParameters& camera);
 Eigen::VectorXd ApplyCameraRotation(const Eigen::VectorXd& vertices,

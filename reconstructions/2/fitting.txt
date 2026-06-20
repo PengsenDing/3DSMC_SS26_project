@@ -4,17 +4,17 @@ semantic_landmarks: 40
 contour_landmarks: 21
 rejected_semantic_landmarks: 0
 initial_rmse_normalized: 0.01740262991
-final_rmse_normalized: 0.01023109851
+final_rmse_normalized: 0.01039702031
 camera_angle_axis: 0.2308896601 0.04050297829 -0.04196512606
 camera_scale: 0.002908783025
 camera_translation: 0.4956599119 0.4796538255
 shape_coefficients: 80
-shape[0]: -0.207140341
-shape[1]: -0.3946371311
-shape[2]: -0.8276076607
-shape[3]: -0.4043084949
-shape[4]: 0.08323107251
-shape[5]: -0.695354331
+shape[0]: -0.127140341
+shape[1]: -0.3146371311
+shape[2]: -0.9076076607
+shape[3]: -0.3243084949
+shape[4]: 0.003231072507
+shape[5]: -0.775354331
 shape[6]: 0.1679368642
 shape[7]: 0.002744065867
 shape[8]: 0.06836985578
@@ -90,12 +90,12 @@ shape[77]: 0.121986215
 shape[78]: -0.1002485859
 shape[79]: 0.03055450796
 expression_coefficients: 30
-expression[0]: 0.01302558909
-expression[1]: -0.6041012663
-expression[2]: 0.1166963693
-expression[3]: -0.01502039382
-expression[4]: -0.003330090583
-expression[5]: 0.7638389581
+expression[0]: -0.06697441091
+expression[1]: -0.5241012663
+expression[2]: 0.1966963693
+expression[3]: -0.09502039382
+expression[4]: -0.08333009058
+expression[5]: 0.6838389581
 expression[6]: -0.05067686744
 expression[7]: 0.1387254796
 expression[8]: -0.06294019054

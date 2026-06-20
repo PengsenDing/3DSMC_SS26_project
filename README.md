@@ -38,6 +38,10 @@ This single command performs:
 ```text
 MediaPipe landmark detection
 → BFM camera/identity/expression fitting
+→ fixed-geometry albedo and illumination fitting
+→ constrained dense identity/expression refinement
+→ final albedo and illumination re-fitting
+→ direct dense per-vertex RGB fitting
 → OFF and colored PLY export
 → fitting diagnostics
 ```
@@ -57,11 +61,31 @@ reconstructions/face/
 ├── face.off
 ├── face.ply
 ├── face_aligned.ply
+├── face_albedo.ply
 ├── fitting.txt
+├── photometric.txt
+├── texture_fitting.txt
 ├── reprojections.csv
 ├── overlay.png
 ├── raster_depth.png
 ├── visibility.png
+├── photometric_mask.png
+├── texture_mask.png
+├── camera_normal.png
+├── mean_albedo_render.png
+├── estimated_albedo.png
+├── rendered_initial.png
+├── rendered_illumination.png
+├── rendered_intrinsic.png
+├── rendered_intrinsic_overlay.png
+├── rendered_final.png             # direct RGB texture fit
+├── rendered_final_overlay.png
+├── photometric_residual.png
+├── texture_residual.png
+├── dense_refinement.txt
+├── target_silhouette.png
+├── refined_silhouette.png
+├── refined_geometry_overlay.png
 ├── run.json
 └── renders/                 # only with --render
     ├── albedo.png
@@ -75,6 +99,12 @@ reconstructions/face/
 - Check `overlay.png` before judging the reconstruction quality.
 - Check `raster_depth.png` and `visibility.png` when projected colors look
   incorrect.
+- Compare `rendered_initial.png`, `rendered_illumination.png`, and
+  `rendered_intrinsic.png` to inspect intrinsic appearance fitting.
+- `rendered_final.png` is the primary sample-style result: visible vertex RGB
+  values are fitted directly to minimize rendered-versus-input pixel error.
+- Open `face_albedo.ply` to inspect the fitted intrinsic BFM albedo without
+  photograph lighting baked into its vertex colors.
 - Re-running the same image updates the same directory instead of scattering
   additional files around the repository.
 
@@ -84,9 +114,51 @@ Useful pipeline options:
 --name NAME          Override the run directory name
 --output-root DIR    Override the reconstructions/ parent directory
 --model PATH         Override the BFM HDF5 file
+--albedo-components  Number of normalized color PCA coefficients
+--photometric-stride Pixel subsampling used for appearance fitting
+--texture-stride     Pixel subsampling used for direct RGB fitting
+--texture-prior      Prior weight for initialized vertex colors
+--texture-smoothness Mesh-edge smoothness for fitted vertex colors
+--no-dense-refinement Skip dense geometry refinement
+--dense-resolution   Maximum refinement image dimension
 --render             Export the four rendering modes
 --verbose-optimization
 ```
+
+## Weak-Perspective Baseline
+
+Before changing the camera model, run a small regression baseline with several
+different photographs:
+
+```bash
+./.venv/bin/python scripts/evaluate_weak_perspective.py \
+  inputs/1.jpg \
+  inputs/2.png \
+  inputs/exp_face_converted.jpg
+```
+
+The script runs the normal reconstruction pipeline independently for every
+image and stores the results under:
+
+```text
+reconstructions/_baselines/weak-perspective/
+├── 1/
+├── 2/
+├── exp_face_converted/
+├── summary.csv
+├── summary.md
+└── baseline.json
+```
+
+The summary records pixel-space semantic and contour RMSE, rejected landmarks,
+maximum normalized identity/expression coefficients, coefficients touching the
+`±3σ` bounds, and visible rasterized area. This is a regression reference for
+later weak-perspective versus perspective comparisons; it does not revalidate
+the MediaPipe-to-BFM correspondence table.
+
+Pass `--render` if the four viewer diagnostic images are also needed. Future
+side-view photographs can be appended to the same command without changing
+the script.
 
 ## Basel Face Model
 
@@ -177,8 +249,89 @@ barycentric coordinates
 ```
 
 These buffers are required for visibility-aware texture sampling and will also
-provide the fixed pixel-to-surface correspondences needed by later dense
-photometric fitting.
+provide the fixed pixel-to-surface correspondences used by dense photometric
+fitting.
+
+### Analysis by synthesis
+
+After landmark fitting, geometry and the weak-perspective camera are fixed.
+The rasterizer maps every visible image pixel to a triangle and barycentric
+coordinates. Smooth fitted-mesh normals and BFM albedo are then interpolated
+at those pixels.
+
+The appearance model is:
+
+```text
+albedo(beta) =
+    mean_albedo
+    + color_basis * sqrt(color_variance) * normalized_albedo_coefficients
+
+lighting(normal, gamma) =
+    gamma_0 + gamma_1 * nx + gamma_2 * ny + gamma_3 * nz
+
+rendered_rgb = albedo(beta) * lighting(normal, gamma)
+```
+
+The implementation first fits 12 first-order spherical-harmonics illumination
+parameters (four per RGB channel), then alternates between 30 normalized BFM
+albedo coefficients and illumination. It uses visible face pixels, Huber
+weights, a Gaussian PCA prior, and `±3σ` albedo bounds. The optimization does
+not alter pose or geometry, which keeps appearance from compensating for
+unstable shape updates.
+
+`photometric.txt` records the initial, illumination-only, and final RGB RMSE,
+along with all fitted appearance parameters.
+
+### Direct RGB texture fitting
+
+The primary visual output follows the sample project's objective:
+
+```text
+minimize sum_pixels ||barycentric(vertex_rgb) - input_rgb||²
+```
+
+With geometry and visibility fixed, rendered color is linear in the three
+vertex colors of each visible triangle. The implementation therefore assembles
+one sparse least-squares system for all visible pixels and solves the RGB
+channels directly. A weak initialization prior and mesh-edge smoothness keep
+unobserved or poorly constrained vertices stable. The rasterized face is also
+intersected with the detected MediaPipe face oval so geometry mismatch near
+the cheek or jaw does not bake background pixels into the mesh. `face.ply`,
+`face_aligned.ply`, `rendered_final.png`, and
+`rendered_final_overlay.png` use these fitted, illumination-baked colors.
+The intrinsic BFM result remains available separately as `face_albedo.ply` and
+`rendered_intrinsic.png`.
+
+### Dense geometry refinement
+
+After the first appearance fit, the pipeline performs a conservative
+low-resolution refinement of the leading identity and expression coefficients.
+For every candidate update it:
+
+```text
+regenerates the BFM vertices
+→ recomputes smooth camera-space normals
+→ rerasterizes the complete mesh
+→ reevaluates landmark, silhouette, photometric, and PCA-prior losses
+```
+
+The CPU rasterizer is not differentiable, so this stage uses bounded numerical
+coordinate search instead of back-propagation. By default it refines six
+identity and six expression coefficients in one pass at a maximum image
+dimension of 192 pixels. Eye, eyebrow, nose, and mouth pixels receive larger
+photometric weights. An update is accepted only if the combined objective
+decreases and landmark RMSE remains within 5% of its starting value.
+
+After geometry refinement, visibility is recomputed at full resolution and
+albedo/illumination are fitted again. `dense_refinement.txt` records the loss
+components before and after refinement. The pre-refinement appearance and its
+report are preserved under `initial_appearance/`, so the refined and original
+solutions can be compared directly.
+
+This stage generally provides a modest improvement rather than a photographic
+identity match: low-dimensional BFM geometry cannot reproduce hair, iris
+detail, exact eyelids, or arbitrary local anatomy, and the albedo PCA space
+cannot reproduce all high-frequency facial texture.
 
 Useful fitting options:
 
@@ -202,10 +355,10 @@ Open `face.off` directly in MeshLab. For visual comparison, open
   --render-all reconstructions/face/renders
 ```
 
-This is still a single-view reconstruction. Photo colors improve appearance,
-but hidden geometry, hair, ears, and true depth cannot be recovered reliably
-from one frontal photograph. Full differentiable RGB/albedo/illumination
-optimization remains a later refinement stage.
+This is still a single-view reconstruction. Hidden geometry, hair, ears, and
+true depth cannot be recovered reliably from one frontal photograph. The
+appearance stage optimizes only the visible BFM face and cannot reproduce
+high-frequency details outside the available PCA albedo space.
 
 ## Standalone Landmark Detection
 

@@ -1,31 +1,101 @@
-# Ignore the entire build directory (compiled binaries, object files, Ninja files)
-build/
-.cache/
-# Ignore data folder
-data/
-# Ignore results folder
-results/
-# Ignore the libraries folders
-libs/
-# VSCode clutter
-.vscode/
-# Ignore OS-specific clutter
-.DS_Store
-Thumbs.db
-build/
-.DS_Store
-.venv/
-.cache/
+# -----------------------------------------------------------------------------
+# CMake / C++ build products
+# -----------------------------------------------------------------------------
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+cmake_install.cmake
+compile_commands.json
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+*.a
+*.dylib
+*.dll
+*.exe
+*.lib
+*.o
+*.obj.d
+*.so
+*.so.*
+
+# Debugger and crash output
+core
+core.*
+*.dSYM/
+*.stackdump
+
+# -----------------------------------------------------------------------------
+# Python environments and caches
+# -----------------------------------------------------------------------------
+/.venv/
+/venv/
+/env/
+/.cache/
+
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Local preprocessing data and downloaded model bundles.
-models/*
-!models/.gitkeep
-inputs/*
-!inputs/.gitkeep
-outputs/*
-!outputs/.gitkeep
+# -----------------------------------------------------------------------------
+# Editors and operating-system files
+# -----------------------------------------------------------------------------
+/.vscode/
+/.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
 
-# Ignore notes
-notes/
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Local dependencies and downloaded model assets
+# -----------------------------------------------------------------------------
+/libs/
+
+/models/*
+!/models/.gitkeep
+
+# Licensed/downloaded BFM containers are local. Keep the correspondence table
+# and the small example mesh in data/ tracked.
+/data/*.h5
+/data/*.hdf5
+
+# -----------------------------------------------------------------------------
+# Local input images
+# -----------------------------------------------------------------------------
+/inputs/*
+!/inputs/.gitkeep
+
+# -----------------------------------------------------------------------------
+# Generated reconstruction and rendering output
+# -----------------------------------------------------------------------------
+/outputs/
+/results/
+
+/reconstructions/*
+!/reconstructions/.gitkeep
+
+/tmp/
+
+# -----------------------------------------------------------------------------
+# Personal working notes
+# -----------------------------------------------------------------------------
+/notes/
