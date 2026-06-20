@@ -1,15 +1,17 @@
 {
-  "created_utc": "2026-06-20T15:11:16.210236+00:00",
+  "created_utc": "2026-06-20T18:35:51.455013+00:00",
   "input_image": "/Users/dingpengsen/Desktop/IN2354 3DSMC/face-reconstruction/inputs/2.png",
   "bfm_model": "/Users/dingpengsen/Desktop/IN2354 3DSMC/face-reconstruction/data/model2019_face12.h5",
   "landmark_count": 478,
   "artifacts": {
-    "landmarks": "landmarks.csv",
-    "landmark_preview": "landmarks.png",
     "mesh_off": "face.off",
     "mesh_ply": "face.ply",
-    "aligned_mesh_ply": "face_aligned.ply",
     "fitting_report": "fitting.txt",
+    "rendered_final": "rendered_final.png",
+    "rendered_final_overlay": "rendered_final_overlay.png",
+    "landmarks": "landmarks.csv",
+    "landmark_preview": "landmarks.png",
+    "aligned_mesh_ply": "face_aligned.ply",
     "reprojections": "reprojections.csv",
     "overlay": "overlay.png",
     "raster_depth": "raster_depth.png",
@@ -26,14 +28,13 @@
     "rendered_illumination": "rendered_illumination.png",
     "rendered_intrinsic": "rendered_intrinsic.png",
     "rendered_intrinsic_overlay": "rendered_intrinsic_overlay.png",
-    "rendered_final": "rendered_final.png",
-    "rendered_final_overlay": "rendered_final_overlay.png",
     "photometric_residual": "photometric_residual.png",
     "texture_residual": "texture_residual.png",
     "dense_refinement_report": "dense_refinement.txt",
     "target_silhouette": "target_silhouette.png",
     "refined_silhouette": "refined_silhouette.png",
     "refined_geometry_overlay": "refined_geometry_overlay.png",
-    "initial_appearance": "initial_appearance/"
+    "initial_appearance": "initial_appearance/",
+    "renders": "renders/"
   }
 }

@@ -74,6 +74,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of BFM albedo PCA coefficients",
     )
     parser.add_argument(
+        "--focal-regularization",
+        type=float,
+        default=0.25,
+        help="Weight keeping perspective focal length near a portrait prior",
+    )
+    parser.add_argument(
         "--photometric-stride",
         type=int,
         default=2,
@@ -171,6 +177,8 @@ def main() -> int:
         "face",
         "--albedo-components",
         str(args.albedo_components),
+        "--focal-regularization",
+        str(args.focal_regularization),
         "--photometric-stride",
         str(args.photometric_stride),
         "--texture-stride",

@@ -76,7 +76,7 @@ Eigen::VectorXd SampleVisibleVertexColorsFromImage(
   }
 
   const std::vector<bool> visible_vertices =
-      ComputeVisibleVertices(rasterization, 2.0f);
+      ComputeVisibleVertices(rasterization, 1.0e-4f);
   Eigen::VectorXd colors(vertices.size());
   for (int vertex = 0; vertex < vertices.size() / 3; ++vertex) {
     Eigen::Vector3d color = FallbackColor(fallback_colors, vertex);

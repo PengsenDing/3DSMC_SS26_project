@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and summarize a small weak-perspective reconstruction baseline."""
+"""Run and summarize a small perspective reconstruction baseline."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import cv2
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = (
-    PROJECT_ROOT / "reconstructions" / "_baselines" / "weak-perspective"
+    PROJECT_ROOT / "reconstructions" / "_baselines" / "perspective"
 )
 COEFFICIENT_LIMIT = 3.0
 LIMIT_TOLERANCE = 1.0e-3
@@ -42,7 +42,8 @@ class BaselineResult:
     semantic_rmse_pixels: float | None = None
     contour_rmse_pixels: float | None = None
     all_rmse_pixels: float | None = None
-    camera_scale: float | None = None
+    camera_focal_length: float | None = None
+    camera_distance: float | None = None
     shape_max_abs: float | None = None
     expression_max_abs: float | None = None
     shape_at_limit_count: int | None = None
@@ -55,7 +56,7 @@ class BaselineResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the current weak-perspective pipeline on several photographs "
+            "Run the current perspective pipeline on several photographs "
             "and write comparable CSV/Markdown baseline summaries."
         )
     )
@@ -215,7 +216,12 @@ def summarize_run(image: Path, run_name: str, run_directory: Path) -> BaselineRe
         semantic_rmse_pixels=semantic_rmse,
         contour_rmse_pixels=contour_rmse,
         all_rmse_pixels=all_rmse,
-        camera_scale=float(report["camera_scale"]),
+        camera_focal_length=float(
+            report["camera_focal_length_normalized"]
+        ),
+        camera_distance=float(
+            str(report["camera_translation"]).split()[2]
+        ),
         shape_max_abs=max(map(abs, shape), default=0.0),
         expression_max_abs=max(map(abs, expression), default=0.0),
         shape_at_limit_count=sum(abs(value) >= limit_threshold for value in shape),
@@ -250,11 +256,11 @@ def write_summaries(
 
     successful = [result for result in results if result.status == "success"]
     lines = [
-        "# Weak-Perspective Baseline",
+        "# Perspective Baseline",
         "",
         f"Created: {datetime.now(timezone.utc).isoformat()}",
         "",
-        "Camera model: weak perspective",
+        "Camera model: perspective",
         "",
         "| Image | Status | Semantic RMSE (px) | Contour RMSE (px) | Rejected | "
         "Shape max | Expr. max | At limit (S/E) | Visible |",
@@ -294,7 +300,7 @@ def write_summaries(
 
     metadata = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "camera_model": "weak-perspective",
+        "camera_model": "perspective",
         "command": command,
         "coefficient_limit": COEFFICIENT_LIMIT,
         "runs": [asdict(result) for result in results],
@@ -317,7 +323,7 @@ def main() -> int:
     results: list[BaselineResult] = []
 
     for index, (image, run_name) in enumerate(zip(images, names), start=1):
-        print(f"[{index}/{len(images)}] Weak-perspective baseline: {image.name}")
+        print(f"[{index}/{len(images)}] Perspective baseline: {image.name}")
         command = [
             sys.executable,
             str(PROJECT_ROOT / "reconstruct.py"),
@@ -333,6 +339,7 @@ def main() -> int:
             "--build-dir",
             str(args.build_dir.expanduser().resolve()),
             "--no-dense-refinement",
+            "--diagnostics",
         ]
         if args.render:
             command.append("--render")

@@ -19,24 +19,24 @@ int main() {
     return 1;
   }
 
-  // Two triangles have identical screen coordinates. The second triangle is
-  // closer because larger camera-space Z points towards the frontal camera.
+  // Two triangles have identical perspective projections. The second
+  // triangle is closer because it has the larger inverse optical depth.
   Eigen::VectorXd vertices(18);
   vertices <<
       -0.3, 0.3, 1.0,
        0.3, 0.3, 1.0,
        0.0, -0.3, 1.0,
-      -0.3, 0.3, 2.0,
-       0.3, 0.3, 2.0,
-       0.0, -0.3, 2.0;
+      -0.2, 0.2, 2.0,
+       0.2, 0.2, 2.0,
+       0.0, -0.2, 2.0;
   Eigen::MatrixXi triangles(2, 3);
   triangles << 0, 1, 2,
                3, 4, 5;
 
   face_recon::CameraParameters camera;
-  camera.scale = 1.0;
-  camera.translation_x = 0.5;
-  camera.translation_y = 0.5;
+  camera.translation = Eigen::Vector3d(0.0, 0.0, 4.0);
+  camera.focal_length = 2.5;
+  camera.aspect_ratio = 1.0;
   const face_recon::RasterizationResult rasterization =
       face_recon::RasterizeMesh(vertices, triangles, camera, 64, 64);
 
@@ -46,19 +46,20 @@ int main() {
       continue;
     }
     ++visible_pixels;
-    if (pixel.triangle_id != 1 || std::abs(pixel.depth - 2.0f) > 1.0e-5f ||
+    if (pixel.triangle_id != 1 ||
+        std::abs(pixel.depth - 0.5f) > 1.0e-5f ||
         std::abs(pixel.barycentric.sum() - 1.0f) > 1.0e-4f) {
       std::cerr << "Z-buffer or triangle coverage test failed\n";
       return 1;
     }
   }
-  if (visible_pixels < 500) {
+  if (visible_pixels < 400) {
     std::cerr << "Rasterized triangle contains too few pixels\n";
     return 1;
   }
 
   const std::vector<bool> visible_vertices =
-      face_recon::ComputeVisibleVertices(rasterization, 0.1f);
+      face_recon::ComputeVisibleVertices(rasterization, 1.0e-4f);
   if (visible_vertices[0] || visible_vertices[1] || visible_vertices[2] ||
       !visible_vertices[3] || !visible_vertices[4] || !visible_vertices[5]) {
     std::cerr << "Vertex visibility test failed\n";

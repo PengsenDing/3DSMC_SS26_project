@@ -21,6 +21,7 @@ struct FittingOptions {
   double contour_weight = 35.0;
   double shape_regularization = 0.01;
   double expression_regularization = 0.01;
+  double focal_regularization = 0.25;
   double huber_delta = 0.01;
   double outlier_threshold = 0.035;
   int contour_refinement_steps = 2;
@@ -29,9 +30,10 @@ struct FittingOptions {
 
 struct CameraParameters {
   Eigen::Vector3d angle_axis = Eigen::Vector3d::Zero();
-  double scale = 1.0;
-  double translation_x = 0.5;
-  double translation_y = 0.5;
+  Eigen::Vector3d translation = Eigen::Vector3d(0.0, 0.0, 400.0);
+  // Horizontal focal length normalized by image width.
+  double focal_length = 1.2;
+  double aspect_ratio = 1.0;
 };
 
 struct LandmarkReprojection {

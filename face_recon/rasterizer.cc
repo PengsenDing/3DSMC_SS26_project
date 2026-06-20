@@ -32,15 +32,27 @@ std::vector<ProjectedVertex> ProjectVertices(const Eigen::VectorXd& vertices,
     double rotated[3];
     ceres::AngleAxisRotatePoint(camera.angle_axis.data(),
                                 vertices.data() + 3 * vertex, rotated);
+    const double optical_depth = camera.translation.z() - rotated[2];
+    if (optical_depth <= 1.0e-6) {
+      projected[vertex].pixel =
+          Eigen::Vector2f(-1.0e9f, -1.0e9f);
+      projected[vertex].depth =
+          -std::numeric_limits<float>::infinity();
+      continue;
+    }
+    const double inverse_depth = 1.0 / optical_depth;
     const double x_norm =
-        camera.scale * rotated[0] + camera.translation_x;
+        0.5 + camera.focal_length *
+                  (rotated[0] + camera.translation.x()) * inverse_depth;
     const double y_norm =
-        -camera.scale * rotated[1] + camera.translation_y;
+        0.5 - camera.focal_length * camera.aspect_ratio *
+                  (rotated[1] + camera.translation.y()) * inverse_depth;
     projected[vertex].pixel =
         Eigen::Vector2f(static_cast<float>(x_norm * (width - 1)),
                         static_cast<float>(y_norm * (height - 1)));
-    // The BFM face points towards +Z, so larger camera-space Z is closer.
-    projected[vertex].depth = static_cast<float>(rotated[2]);
+    // Inverse optical depth is linear in screen-space barycentric
+    // coordinates and larger values are closer to the camera.
+    projected[vertex].depth = static_cast<float>(inverse_depth);
   }
   return projected;
 }
@@ -103,6 +115,10 @@ RasterizationResult RasterizeMesh(const Eigen::VectorXd& vertices,
     const ProjectedVertex& p0 = result.projected_vertices[i0];
     const ProjectedVertex& p1 = result.projected_vertices[i1];
     const ProjectedVertex& p2 = result.projected_vertices[i2];
+    if (!std::isfinite(p0.depth) || !std::isfinite(p1.depth) ||
+        !std::isfinite(p2.depth)) {
+      continue;
+    }
     const float min_x_value =
         std::min({p0.pixel.x(), p1.pixel.x(), p2.pixel.x()});
     const float max_x_value =
@@ -137,15 +153,22 @@ RasterizationResult RasterizeMesh(const Eigen::VectorXd& vertices,
           continue;
         }
 
-        const float depth =
+        const float inverse_depth =
             barycentric[0] * p0.depth +
             barycentric[1] * p1.depth +
             barycentric[2] * p2.depth;
+        if (inverse_depth <= 0.0f) {
+          continue;
+        }
+        Eigen::Vector3f perspective_barycentric(
+            barycentric[0] * p0.depth / inverse_depth,
+            barycentric[1] * p1.depth / inverse_depth,
+            barycentric[2] * p2.depth / inverse_depth);
         RasterPixel& pixel = result.at(x, y);
-        if (!pixel.visible() || depth > pixel.depth) {
+        if (!pixel.visible() || inverse_depth > pixel.depth) {
           pixel.triangle_id = triangle;
-          pixel.depth = depth;
-          pixel.barycentric = barycentric;
+          pixel.depth = inverse_depth;
+          pixel.barycentric = perspective_barycentric;
         }
       }
     }

@@ -91,6 +91,7 @@ Useful pipeline options:
 --output-root DIR    Override the reconstructions/ parent directory
 --model PATH         Override the BFM HDF5 file
 --albedo-components  Number of normalized color PCA coefficients
+--focal-regularization Perspective focal-length prior weight
 --photometric-stride Pixel subsampling used for appearance fitting
 --texture-stride     Pixel subsampling used for direct RGB fitting
 --texture-prior      Prior weight for initialized vertex colors
@@ -102,13 +103,13 @@ Useful pipeline options:
 --verbose-optimization
 ```
 
-## Weak-Perspective Baseline
+## Perspective Baseline
 
 Before changing the camera model, run a small regression baseline with several
 different photographs:
 
 ```bash
-./.venv/bin/python scripts/evaluate_weak_perspective.py \
+./.venv/bin/python scripts/evaluate_perspective.py \
   inputs/1.jpg \
   inputs/2.png \
   inputs/exp_face_converted.jpg
@@ -118,7 +119,7 @@ The script runs the normal reconstruction pipeline independently for every
 image and stores the results under:
 
 ```text
-reconstructions/_baselines/weak-perspective/
+reconstructions/_baselines/perspective/
 ├── 1/
 ├── 2/
 ├── exp_face_converted/
@@ -127,11 +128,10 @@ reconstructions/_baselines/weak-perspective/
 └── baseline.json
 ```
 
-The summary records pixel-space semantic and contour RMSE, rejected landmarks,
-maximum normalized identity/expression coefficients, coefficients touching the
-`±3σ` bounds, and visible rasterized area. This is a regression reference for
-later weak-perspective versus perspective comparisons; it does not revalidate
-the MediaPipe-to-BFM correspondence table.
+The summary records pixel-space semantic and contour RMSE, fitted focal length
+and camera distance, rejected landmarks, normalized identity/expression
+coefficients, and visible rasterized area. It does not revalidate the
+MediaPipe-to-BFM correspondence table.
 
 Pass `--render` if the four viewer diagnostic images are also needed. Future
 side-view photographs can be appended to the same command without changing
@@ -163,7 +163,7 @@ Useful options:
 
 ## Reconstruction Internals
 
-The C++ fitting stage uses a weak-perspective camera, BFM identity
+The C++ fitting stage uses a perspective camera, BFM identity
 coefficients, and BFM expression coefficients. `reconstruct.py` connects this
 stage to MediaPipe, so the lower-level commands normally do not need to be run
 manually.
@@ -177,13 +177,19 @@ V = mean_shape + mean_expression
       * normalized_expression_coefficients
 ```
 
-The weak-perspective camera projects a rotated vertex `V` to normalized image
-coordinates:
+For a rotated vertex `(X,Y,Z)`, normalized image coordinates are:
 
 ```text
-x = scale * (R * V).x + translation_x
-y = -scale * (R * V).y + translation_y
+depth = translation_z - Z
+x = 0.5 + focal_length * (X + translation_x) / depth
+y = 0.5 - focal_length * aspect_ratio
+          * (Y + translation_y) / depth
 ```
+
+The focal length is normalized by image width. Ceres optimizes rotation, 3D
+translation, focal length, identity, and expression. A light focal-length
+prior prevents the single-image focal/depth ambiguity from collapsing to an
+unrealistic telephoto solution.
 
 Ceres first optimizes only the camera. It then optimizes identity before
 jointly optimizing camera, identity, and expression. The fitter uses robust
@@ -231,7 +237,7 @@ fitting.
 
 ### Analysis by synthesis
 
-After landmark fitting, geometry and the weak-perspective camera are fixed.
+After landmark fitting, geometry and the perspective camera are fixed.
 The rasterizer maps every visible image pixel to a triangle and barycentric
 coordinates. Smooth fitted-mesh normals and BFM albedo are then interpolated
 at those pixels.
@@ -317,6 +323,7 @@ Useful fitting options:
 --expression-components N
 --shape-regularization WEIGHT
 --expression-regularization WEIGHT
+--focal-regularization WEIGHT
 --landmark-weight WEIGHT
 --contour-weight WEIGHT
 --outlier-threshold ERROR

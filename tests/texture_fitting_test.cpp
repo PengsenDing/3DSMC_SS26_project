@@ -37,9 +37,9 @@ int main() {
                0, 2, 3;
 
   face_recon::CameraParameters camera;
-  camera.scale = 1.0;
-  camera.translation_x = 0.5;
-  camera.translation_y = 0.5;
+  camera.translation = Eigen::Vector3d(0.0, 0.0, 4.0);
+  camera.focal_length = 2.0;
+  camera.aspect_ratio = 1.0;
   const face_recon::RasterizationResult rasterization =
       face_recon::RasterizeMesh(vertices, triangles, camera, 64, 64);
 

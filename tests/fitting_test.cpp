@@ -16,13 +16,16 @@ namespace {
 
 Eigen::Vector2d Project(const Eigen::Vector3d& point,
                         const Eigen::Vector3d& angle_axis,
-                        double scale,
-                        double translation_x,
-                        double translation_y) {
+                        const Eigen::Vector3d& translation,
+                        double focal_length,
+                        double aspect_ratio) {
   double rotated[3];
   ceres::AngleAxisRotatePoint(angle_axis.data(), point.data(), rotated);
-  return Eigen::Vector2d(scale * rotated[0] + translation_x,
-                         -scale * rotated[1] + translation_y);
+  const double depth = translation.z() - rotated[2];
+  return Eigen::Vector2d(
+      0.5 + focal_length * (rotated[0] + translation.x()) / depth,
+      0.5 - focal_length * aspect_ratio *
+                (rotated[1] + translation.y()) / depth);
 }
 
 }  // namespace
@@ -67,9 +70,9 @@ int main() {
   Eigen::VectorXd true_expression(1);
   true_expression << 0.4;
   const Eigen::Vector3d true_rotation(0.04, -0.08, 0.03);
-  constexpr double kTrueScale = 0.18;
-  constexpr double kTrueTranslationX = 0.51;
-  constexpr double kTrueTranslationY = 0.49;
+  const Eigen::Vector3d true_translation(0.12, -0.08, 15.0);
+  constexpr double kTrueFocalLength = 1.2;
+  constexpr double kAspectRatio = 4.0 / 3.0;
 
   std::vector<face_reconstruction::Landmark2D> landmarks;
   std::vector<face_reconstruction::BfmMediaPipeCorrespondence> correspondences;
@@ -82,13 +85,15 @@ int main() {
             expression.pca_variance.cwiseSqrt().asDiagonal() *
             true_expression;
     const Eigen::Vector2d target =
-        Project(point, true_rotation, kTrueScale,
-                kTrueTranslationX, kTrueTranslationY);
+        Project(point, true_rotation, true_translation,
+                kTrueFocalLength, kAspectRatio);
 
     face_reconstruction::Landmark2D landmark;
     landmark.index = vertex;
     landmark.x_norm = static_cast<float>(target.x());
     landmark.y_norm = static_cast<float>(target.y());
+    landmark.u = static_cast<float>(target.x() * 800.0);
+    landmark.v = static_cast<float>(target.y() * 600.0);
     landmarks.push_back(landmark);
 
     face_reconstruction::BfmMediaPipeCorrespondence correspondence;

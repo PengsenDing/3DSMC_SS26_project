@@ -145,10 +145,14 @@ bool SaveFittingReport(const FittingResult& result, const std::string& filename)
          << result.camera.angle_axis.x() << " "
          << result.camera.angle_axis.y() << " "
          << result.camera.angle_axis.z() << "\n";
-  output << "camera_scale: " << result.camera.scale << "\n";
   output << "camera_translation: "
-         << result.camera.translation_x << " "
-         << result.camera.translation_y << "\n";
+         << result.camera.translation.x() << " "
+         << result.camera.translation.y() << " "
+         << result.camera.translation.z() << "\n";
+  output << "camera_focal_length_normalized: "
+         << result.camera.focal_length << "\n";
+  output << "camera_aspect_ratio: "
+         << result.camera.aspect_ratio << "\n";
   output << "shape_coefficients: " << result.shape_coefficients.size() << "\n";
   for (int index = 0; index < result.shape_coefficients.size(); ++index) {
     output << "shape[" << index << "]: " << result.shape_coefficients[index] << "\n";

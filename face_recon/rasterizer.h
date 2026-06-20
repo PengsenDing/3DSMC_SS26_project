@@ -51,7 +51,7 @@ RasterizationResult RasterizeMesh(const Eigen::VectorXd& vertices,
 
 std::vector<bool> ComputeVisibleVertices(
     const RasterizationResult& rasterization,
-    float depth_tolerance = 1.0f);
+    float depth_tolerance = 1.0e-4f);
 
 }  // namespace face_recon
 

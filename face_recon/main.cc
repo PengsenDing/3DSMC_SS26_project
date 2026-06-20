@@ -62,6 +62,9 @@ int main(int argc, char* argv[]) {
   app.add_option("--expression-regularization",
                  fitting_options.expression_regularization,
                  "Weight of the expression PCA prior");
+  app.add_option("--focal-regularization",
+                 fitting_options.focal_regularization,
+                 "Weight keeping normalized focal length near a typical portrait camera");
   app.add_option("--landmark-weight", fitting_options.landmark_weight,
                  "Weight of the sparse landmark reprojection term");
   app.add_option("--contour-weight", fitting_options.contour_weight,
@@ -126,6 +129,7 @@ int main(int argc, char* argv[]) {
       fitting_options.contour_weight <= 0.0 ||
       fitting_options.shape_regularization < 0.0 ||
       fitting_options.expression_regularization < 0.0 ||
+      fitting_options.focal_regularization < 0.0 ||
       fitting_options.outlier_threshold <= 0.0 ||
       fitting_options.contour_refinement_steps <= 0) {
     std::cerr << "[ERROR] Fitting weights, outlier threshold, and contour "
