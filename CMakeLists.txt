@@ -105,8 +105,6 @@ add_library(
     reconstruction_fitting
     face_recon/fitting.cc
     face_recon/fitting.h
-    face_recon/dense_refinement.cc
-    face_recon/dense_refinement.h
     face_recon/image_fitting.cc
     face_recon/image_fitting.h
     face_recon/mesh_export.cc

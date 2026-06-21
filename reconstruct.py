@@ -103,17 +103,6 @@ def parse_args() -> argparse.Namespace:
         default=0.01,
         help="Mesh-edge smoothness weight for fitted vertex colors",
     )
-    parser.add_argument(
-        "--no-dense-refinement",
-        action="store_true",
-        help="Skip dense identity/expression refinement",
-    )
-    parser.add_argument(
-        "--dense-resolution",
-        type=int,
-        default=192,
-        help="Maximum image dimension for dense geometry refinement",
-    )
     return parser.parse_args()
 
 
@@ -187,11 +176,7 @@ def main() -> int:
         str(args.texture_prior),
         "--texture-smoothness",
         str(args.texture_smoothness),
-        "--dense-resolution",
-        str(args.dense_resolution),
     ]
-    if args.no_dense_refinement:
-        fitting_command.append("--no-dense-refinement")
     if args.diagnostics:
         fitting_command.append("--diagnostics")
     if args.verbose_optimization:
@@ -246,16 +231,6 @@ def main() -> int:
                 "texture_residual": "texture_residual.png",
             }
         )
-        if not args.no_dense_refinement:
-            artifacts.update(
-                {
-                    "dense_refinement_report": "dense_refinement.txt",
-                    "target_silhouette": "target_silhouette.png",
-                    "refined_silhouette": "refined_silhouette.png",
-                    "refined_geometry_overlay": "refined_geometry_overlay.png",
-                    "initial_appearance": "initial_appearance/",
-                }
-            )
     if args.render:
         artifacts["renders"] = "renders/"
 
@@ -282,16 +257,11 @@ def main() -> int:
             "rendered_intrinsic_overlay.png",
             "photometric_residual.png",
             "texture_residual.png",
-            "dense_refinement.txt",
-            "target_silhouette.png",
-            "refined_silhouette.png",
-            "refined_geometry_overlay.png",
         ]
         for filename in diagnostics:
             path = run_directory / filename
             if path.is_file():
                 path.unlink()
-        shutil.rmtree(run_directory / "initial_appearance", ignore_errors=True)
     if not args.render:
         shutil.rmtree(run_directory / "renders", ignore_errors=True)
 

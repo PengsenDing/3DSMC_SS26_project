@@ -12,19 +12,22 @@
 namespace face_recon {
 
 struct FittingOptions {
-  int num_shape_coefficients = 80;
-  int num_expression_coefficients = 30;
+  // Defaults match the Basel Face Model's full PCA dimensionality (199
+  // shape, 100 expression components for model2019_face12.h5).
+  int num_shape_coefficients = 199;
+  int num_expression_coefficients = 100;
   int camera_iterations = 100;
-  int shape_iterations = 150;
   int joint_iterations = 200;
   double landmark_weight = 100.0;
   double contour_weight = 35.0;
-  double shape_regularization = 0.01;
-  double expression_regularization = 0.01;
+  // Raised proportionally to the increase in free PCA coefficients above,
+  // so the optimizer does not use the newly available coefficients to
+  // overfit a comparatively small set of 2D landmark observations.
+  double shape_regularization = 0.1;
+  double expression_regularization = 0.08;
   double focal_regularization = 0.25;
   double huber_delta = 0.01;
   double outlier_threshold = 0.035;
-  int contour_refinement_steps = 2;
   bool verbose = false;
 };
 

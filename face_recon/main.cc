@@ -3,7 +3,6 @@
 // Basel Face Model, and orchestrates the facial alignment optimization loops.
 
 #include "face_recon/bfm_model.h"
-#include "face_recon/dense_refinement.h"
 #include "face_recon/fitting.h"
 #include "face_recon/image_fitting.h"
 #include "face_recon/mesh_export.h"
@@ -34,9 +33,7 @@ int main(int argc, char* argv[]) {
   bool save_diagnostics = false;
   face_recon::FittingOptions fitting_options;
   face_recon::PhotometricOptions photometric_options;
-  face_recon::DenseRefinementOptions dense_options;
   face_recon::TextureFittingOptions texture_options;
-  bool disable_dense_refinement = false;
 
   // Define the available CLI flags and options.
   app.add_option("-m,--model", model_path, "Path to the Basel Face Model HDF5 asset container")->check(CLI::ExistingFile);
@@ -71,8 +68,6 @@ int main(int argc, char* argv[]) {
                  "Weight of the dynamic face contour term");
   app.add_option("--outlier-threshold", fitting_options.outlier_threshold,
                  "Maximum normalized residual before rejecting a semantic landmark");
-  app.add_option("--contour-refinements", fitting_options.contour_refinement_steps,
-                 "Number of dynamic contour reassignment steps");
   app.add_flag("-v,--verbose-optimization", verbose_optimization,
                "Print Ceres iteration progress");
   app.add_flag("--diagnostics", save_diagnostics,
@@ -91,18 +86,6 @@ int main(int argc, char* argv[]) {
   app.add_option("--photometric-huber-delta",
                  photometric_options.huber_delta,
                  "Huber threshold for RGB residuals in [0,1]");
-  app.add_flag("--no-dense-refinement", disable_dense_refinement,
-               "Skip identity/expression refinement from dense losses");
-  app.add_option("--dense-resolution", dense_options.resolution,
-                 "Maximum image dimension used for dense geometry refinement");
-  app.add_option("--dense-shape-components",
-                 dense_options.shape_coefficients,
-                 "Leading identity coefficients refined from dense losses");
-  app.add_option("--dense-expression-components",
-                 dense_options.expression_coefficients,
-                 "Leading expression coefficients refined from dense losses");
-  app.add_option("--dense-passes", dense_options.passes,
-                 "Coordinate-search passes for dense geometry refinement");
   app.add_option("--texture-stride", texture_options.pixel_stride,
                  "Use every Nth visible pixel during dense RGB fitting");
   app.add_option("--texture-mask-erosion", texture_options.mask_erosion,
@@ -130,11 +113,9 @@ int main(int argc, char* argv[]) {
       fitting_options.shape_regularization < 0.0 ||
       fitting_options.expression_regularization < 0.0 ||
       fitting_options.focal_regularization < 0.0 ||
-      fitting_options.outlier_threshold <= 0.0 ||
-      fitting_options.contour_refinement_steps <= 0) {
-    std::cerr << "[ERROR] Fitting weights, outlier threshold, and contour "
-                 "refinement count must be valid positive values; "
-                 "regularization may be zero.\n";
+      fitting_options.outlier_threshold <= 0.0) {
+    std::cerr << "[ERROR] Fitting weights and outlier threshold must be "
+                 "valid positive values; regularization may be zero.\n";
     return 1;
   }
   if (photometric_options.num_albedo_coefficients <= 0 ||
@@ -146,14 +127,6 @@ int main(int argc, char* argv[]) {
                  "component count/stride must be positive.\n";
     return 1;
   }
-  if (dense_options.resolution <= 0 ||
-      dense_options.shape_coefficients < 0 ||
-      dense_options.expression_coefficients < 0 ||
-      dense_options.passes <= 0) {
-    std::cerr << "[ERROR] Dense-refinement resolution/passes must be "
-                 "positive and component counts non-negative.\n";
-    return 1;
-  }
   if (texture_options.pixel_stride <= 0 ||
       texture_options.mask_erosion < 0 ||
       texture_options.prior_weight < 0.0 ||
@@ -162,8 +135,6 @@ int main(int argc, char* argv[]) {
                  "pixel stride must be positive.\n";
     return 1;
   }
-  dense_options.enabled = !disable_dense_refinement;
-  dense_options.save_diagnostics = save_diagnostics;
   photometric_options.save_diagnostics = save_diagnostics;
   texture_options.save_diagnostics = save_diagnostics;
 
@@ -243,10 +214,6 @@ int main(int argc, char* argv[]) {
         std::filesystem::path(output_dir) /
         (compact_output ? "photometric.txt"
                         : stem + "_photometric.txt");
-    const std::filesystem::path dense_report_path =
-        std::filesystem::path(output_dir) /
-        (compact_output ? "dense_refinement.txt"
-                        : stem + "_dense_refinement.txt");
     const std::filesystem::path texture_report_path =
         std::filesystem::path(output_dir) /
         (compact_output ? "texture_fitting.txt"
@@ -267,61 +234,6 @@ int main(int argc, char* argv[]) {
           result.vertices, model.triangles(), result.camera,
           image_size.x(), image_size.y());
       std::cout << "[INFO] Fitting BFM albedo and first-order SH illumination...\n";
-      const std::filesystem::path initial_appearance_directory =
-          std::filesystem::path(output_dir) / "initial_appearance";
-      if (dense_options.enabled) {
-        face_recon::PhotometricResult initial_appearance =
-            face_recon::FitPhotometricAppearance(
-                *image_path, model, result.vertices, result.camera,
-                *rasterization, photometric_options,
-                initial_appearance_directory.string());
-        if (save_diagnostics &&
-            !face_recon::SavePhotometricReport(
-                initial_appearance,
-                (initial_appearance_directory / "photometric.txt").string())) {
-          return 1;
-        }
-        std::cout << "[INFO] Refining identity and expression from dense losses...\n";
-        const face_recon::DenseRefinementResult dense_result =
-            face_recon::RefineGeometryDense(
-                *image_path, model, result, initial_appearance, landmarks,
-                dense_options, output_dir);
-        if (save_diagnostics &&
-            !face_recon::SaveDenseRefinementReport(
-                dense_result, dense_report_path.string())) {
-          return 1;
-        }
-        if (dense_result.usable) {
-          result.shape_coefficients = dense_result.shape_coefficients;
-          result.expression_coefficients =
-              dense_result.expression_coefficients;
-          result.vertices = dense_result.vertices;
-          double semantic_squared_error = 0.0;
-          for (int index = 0;
-               index < static_cast<int>(result.reprojections.size());
-               ++index) {
-            auto& reprojection = result.reprojections[index];
-            reprojection.projected = face_recon::ProjectVertex(
-                result.vertices.segment<3>(3 * reprojection.bfm_vertex_id),
-                result.camera);
-            if (index < result.semantic_landmark_count) {
-              semantic_squared_error +=
-                  (reprojection.projected - reprojection.observed)
-                      .squaredNorm();
-            }
-          }
-          result.final_rmse = std::sqrt(
-              semantic_squared_error /
-              std::max(result.semantic_landmark_count, 1));
-        } else {
-          std::cerr << "[WARN] Dense refinement was rejected; preserving "
-                       "landmark-fitted geometry.\n";
-        }
-      }
-      rasterization = face_recon::RasterizeMesh(
-          result.vertices, model.triangles(), result.camera,
-          image_size.x(), image_size.y());
-      std::cout << "[INFO] Re-fitting appearance on refined geometry...\n";
       photometric_result = face_recon::FitPhotometricAppearance(
           *image_path, model, result.vertices, result.camera, *rasterization,
           photometric_options, output_dir);

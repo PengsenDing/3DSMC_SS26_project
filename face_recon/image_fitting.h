@@ -12,12 +12,6 @@ namespace face_recon {
 
 Eigen::Vector2i ReadImageSize(const std::string& image_path);
 
-Eigen::VectorXd SampleVisibleVertexColorsFromImage(
-    const std::string& image_path,
-    const Eigen::VectorXd& vertices,
-    const RasterizationResult& rasterization,
-    const Eigen::VectorXd& fallback_colors);
-
 bool SaveRasterDepthImage(const RasterizationResult& rasterization,
                           const std::string& output_path);
 bool SaveVisibilityImage(const RasterizationResult& rasterization,

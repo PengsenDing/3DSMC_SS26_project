@@ -602,52 +602,36 @@ FittingResult FitBfmToLandmarks(
                      expression, options.outlier_threshold,
                      &result.rejected_landmark_count);
 
-  ceres::Problem shape_problem;
-  AddLandmarkResiduals(shape_problem, semantic_matches, options, camera.data(),
+  // Stage 2 (the only remaining geometric stage besides the camera-only
+  // stage above): contour matches are built once from the Stage-1 camera
+  // with shape/expression still at the mean face, then camera, shape, and
+  // expression are optimized jointly in a single Ceres solve.
+  const std::vector<MatchedLandmark> contour_matches =
+      BuildContourLandmarks(model, landmarks, camera, aspect_ratio,
+                            shape, expression,
+                            num_shape, num_expression, options.contour_weight);
+  std::vector<MatchedLandmark> all_matches = semantic_matches;
+  all_matches.insert(all_matches.end(), contour_matches.begin(),
+                     contour_matches.end());
+
+  ceres::Problem joint_problem;
+  AddLandmarkResiduals(joint_problem, all_matches, options, camera.data(),
                        shape.data(), expression.data(), num_shape,
                        num_expression, aspect_ratio);
-  ConfigureCameraBounds(shape_problem, camera.data(),
+  ConfigureCameraBounds(joint_problem, camera.data(),
                         minimum_translation_z);
-  AddRegularization(shape_problem, shape.data(), num_shape,
+  AddRegularization(joint_problem, shape.data(), num_shape,
                     options.shape_regularization);
-  AddFocalRegularization(shape_problem, camera.data(),
+  AddRegularization(joint_problem, expression.data(), num_expression,
+                    options.expression_regularization);
+  AddFocalRegularization(joint_problem, camera.data(),
                          options.focal_regularization);
-  shape_problem.SetParameterBlockConstant(expression.data());
-  const ceres::Solver::Summary shape_summary =
-      SolveProblem(shape_problem, options.shape_iterations, options.verbose);
-
-  ceres::Solver::Summary joint_summary;
-  std::vector<MatchedLandmark> contour_matches;
-  const int refinement_steps = std::max(options.contour_refinement_steps, 1);
-  for (int refinement = 0; refinement < refinement_steps; ++refinement) {
-    contour_matches =
-        BuildContourLandmarks(model, landmarks, camera, aspect_ratio,
-                              shape, expression,
-                              num_shape, num_expression, options.contour_weight);
-    std::vector<MatchedLandmark> all_matches = semantic_matches;
-    all_matches.insert(all_matches.end(), contour_matches.begin(),
-                       contour_matches.end());
-
-    ceres::Problem joint_problem;
-    AddLandmarkResiduals(joint_problem, all_matches, options, camera.data(),
-                         shape.data(), expression.data(), num_shape,
-                         num_expression, aspect_ratio);
-    ConfigureCameraBounds(joint_problem, camera.data(),
-                          minimum_translation_z);
-    AddRegularization(joint_problem, shape.data(), num_shape,
-                      options.shape_regularization);
-    AddRegularization(joint_problem, expression.data(), num_expression,
-                      options.expression_regularization);
-    AddFocalRegularization(joint_problem, camera.data(),
-                           options.focal_regularization);
-    joint_summary =
-        SolveProblem(joint_problem, options.joint_iterations, options.verbose);
-  }
+  const ceres::Solver::Summary joint_summary =
+      SolveProblem(joint_problem, options.joint_iterations, options.verbose);
 
   result.final_rmse =
       ComputeRmse(semantic_matches, camera, aspect_ratio, shape, expression);
   result.usable = camera_summary.IsSolutionUsable() &&
-                  shape_summary.IsSolutionUsable() &&
                   joint_summary.IsSolutionUsable();
   result.camera.angle_axis =
       Eigen::Vector3d(camera[0], camera[1], camera[2]);
@@ -662,7 +646,6 @@ FittingResult FitBfmToLandmarks(
   result.contour_landmark_count = static_cast<int>(contour_matches.size());
   result.solver_summary =
       "Camera stage: " + camera_summary.BriefReport() +
-      "\nIdentity stage: " + shape_summary.BriefReport() +
       "\nJoint stage: " + joint_summary.BriefReport();
 
   std::vector<MatchedLandmark> final_matches = semantic_matches;
