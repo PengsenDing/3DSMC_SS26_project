@@ -113,6 +113,8 @@ add_library(
     face_recon/photometric_fitting.h
     face_recon/rasterizer.cc
     face_recon/rasterizer.h
+    face_recon/silhouette_fitting.cc
+    face_recon/silhouette_fitting.h
     face_recon/texture_fitting.cc
     face_recon/texture_fitting.h
     src/landmarks.cpp
@@ -162,6 +164,11 @@ if(BUILD_TESTING)
     target_link_libraries(texture_fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(texture_fitting_test)
     add_test(NAME texture_fitting_test COMMAND texture_fitting_test)
+
+    add_executable(silhouette_fitting_test tests/silhouette_fitting_test.cpp)
+    target_link_libraries(silhouette_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(silhouette_fitting_test)
+    add_test(NAME silhouette_fitting_test COMMAND silhouette_fitting_test)
 endif()
 
 # OBJ viewer and MediaPipe landmark CSV tooling from landmark_detection.

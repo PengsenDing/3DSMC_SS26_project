@@ -80,6 +80,31 @@ def parse_args() -> argparse.Namespace:
         help="Weight keeping perspective focal length near a portrait prior",
     )
     parser.add_argument(
+        "--silhouette-mask",
+        type=Path,
+        help=(
+            "Optional external binary face mask; defaults to a dense mask "
+            "rasterized from MediaPipe's face oval"
+        ),
+    )
+    parser.add_argument(
+        "--no-silhouette-fitting",
+        action="store_true",
+        help="Disable mask-driven identity refinement",
+    )
+    parser.add_argument(
+        "--silhouette-resolution",
+        type=int,
+        default=192,
+        help="Maximum mask dimension used for silhouette fitting",
+    )
+    parser.add_argument(
+        "--silhouette-iterations",
+        type=int,
+        default=3,
+        help="Number of view-dependent silhouette rematching iterations",
+    )
+    parser.add_argument(
         "--photometric-stride",
         type=int,
         default=2,
@@ -135,9 +160,8 @@ def main() -> int:
     run_directory = args.output_root.expanduser().resolve() / run_name
     run_directory.mkdir(parents=True, exist_ok=True)
     landmarks_csv = run_directory / "landmarks.csv"
-    landmarks_preview = (
-        run_directory / "landmarks.png" if args.diagnostics else None
-    )
+    observed_silhouette = run_directory / "observed_silhouette.png"
+    landmarks_preview = run_directory / "landmarks.png" if args.diagnostics else None
 
     total_steps = 3 if args.render else 2
     print(f"[1/{total_steps}] Detecting landmarks in {image.name}")
@@ -146,7 +170,15 @@ def main() -> int:
         csv_path=landmarks_csv,
         debug_path=landmarks_preview,
         correspondence_path=correspondences,
+        silhouette_mask_path=(
+            observed_silhouette
+            if not args.no_silhouette_fitting and args.silhouette_mask is None
+            else None
+        ),
     )
+    if not args.no_silhouette_fitting and args.silhouette_mask is not None:
+        supplied_silhouette = require_file(args.silhouette_mask, "Silhouette mask")
+        shutil.copyfile(supplied_silhouette, observed_silhouette)
     print(f"Detected {landmark_count} landmarks")
 
     print(f"[2/{total_steps}] Fitting the Basel Face Model")
@@ -168,6 +200,10 @@ def main() -> int:
         str(args.albedo_components),
         "--focal-regularization",
         str(args.focal_regularization),
+        "--silhouette-resolution",
+        str(args.silhouette_resolution),
+        "--silhouette-iterations",
+        str(args.silhouette_iterations),
         "--photometric-stride",
         str(args.photometric_stride),
         "--texture-stride",
@@ -177,6 +213,10 @@ def main() -> int:
         "--texture-smoothness",
         str(args.texture_smoothness),
     ]
+    if args.no_silhouette_fitting:
+        fitting_command.append("--no-silhouette-fitting")
+    else:
+        fitting_command.extend(["--silhouette-mask", str(observed_silhouette)])
     if args.diagnostics:
         fitting_command.append("--diagnostics")
     if args.verbose_optimization:
@@ -205,6 +245,8 @@ def main() -> int:
         "rendered_final": "rendered_final.png",
         "rendered_final_overlay": "rendered_final_overlay.png",
     }
+    if not args.no_silhouette_fitting:
+        artifacts["silhouette_fitting_report"] = "silhouette_fitting.txt"
     if args.diagnostics:
         artifacts.update(
             {
@@ -231,6 +273,16 @@ def main() -> int:
                 "texture_residual": "texture_residual.png",
             }
         )
+        if not args.no_silhouette_fitting:
+            artifacts.update(
+                {
+                    "observed_silhouette": "observed_silhouette.png",
+                    "silhouette_target": "silhouette_target.png",
+                    "silhouette_initial": "silhouette_initial.png",
+                    "silhouette_refined": "silhouette_refined.png",
+                    "silhouette_overlay": "silhouette_overlay.png",
+                }
+            )
     if args.render:
         artifacts["renders"] = "renders/"
 
@@ -244,6 +296,11 @@ def main() -> int:
             "overlay.png",
             "raster_depth.png",
             "visibility.png",
+            "observed_silhouette.png",
+            "silhouette_target.png",
+            "silhouette_initial.png",
+            "silhouette_refined.png",
+            "silhouette_overlay.png",
             "photometric.txt",
             "texture_fitting.txt",
             "photometric_mask.png",
@@ -286,6 +343,11 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+    except (
+        FileNotFoundError,
+        RuntimeError,
+        ValueError,
+        subprocess.CalledProcessError,
+    ) as error:
         print(f"Error: {error}", file=sys.stderr)
         raise SystemExit(1)

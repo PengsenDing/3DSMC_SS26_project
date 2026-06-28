@@ -22,6 +22,47 @@ os.environ.setdefault("XDG_CACHE_HOME", str(CACHE_DIR))
 DEFAULT_BFM_CORRESPONDENCES = PROJECT_ROOT / "data" / "bfm_mediapipe_correspondence.csv"
 DEFAULT_DEBUG_DIRECTORY = PROJECT_ROOT / "reconstructions" / "_landmark_debug"
 
+# Ordered MediaPipe FACEMESH_FACE_OVAL vertices. They are rasterized into one
+# silhouette observation; they are never exported as sparse BFM constraints.
+FACE_OVAL_INDICES = (
+    10,
+    338,
+    297,
+    332,
+    284,
+    251,
+    389,
+    356,
+    454,
+    323,
+    361,
+    288,
+    397,
+    365,
+    379,
+    378,
+    400,
+    377,
+    152,
+    148,
+    176,
+    149,
+    150,
+    136,
+    172,
+    58,
+    132,
+    93,
+    234,
+    127,
+    162,
+    21,
+    54,
+    103,
+    67,
+    109,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -61,6 +102,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DEBUG_DIRECTORY / "landmarks.png",
         type=Path,
         help="Output debug image path with landmarks drawn on top.",
+    )
+    parser.add_argument(
+        "--silhouette-mask",
+        type=Path,
+        help="Optional binary face-oval silhouette mask output path.",
     )
     parser.add_argument(
         "--max-points-to-label",
@@ -120,6 +166,33 @@ def draw_landmarks(
     return debug_image
 
 
+def write_silhouette_mask(
+    output_path: Path,
+    landmarks,
+    width: int,
+    height: int,
+    cv2_module: Any,
+) -> None:
+    """Rasterize Face Mesh's ordered oval into a dense binary observation."""
+    import numpy as np
+
+    points = np.asarray(
+        [
+            [
+                round(landmarks[index].x * (width - 1)),
+                round(landmarks[index].y * (height - 1)),
+            ]
+            for index in FACE_OVAL_INDICES
+        ],
+        dtype=np.int32,
+    )
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cv2_module.fillPoly(mask, [points], 255, lineType=cv2_module.LINE_8)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2_module.imwrite(str(output_path), mask):
+        raise RuntimeError(f"OpenCV could not write silhouette mask: {output_path}")
+
+
 def write_landmarks_csv(
     csv_path: Path,
     landmarks,
@@ -173,7 +246,9 @@ def write_landmarks_txt(
 
 def load_bfm_correspondences(correspondence_path: Path) -> list[dict[str, str]]:
     if not correspondence_path.is_file():
-        raise FileNotFoundError(f"BFM correspondence CSV does not exist: {correspondence_path}")
+        raise FileNotFoundError(
+            f"BFM correspondence CSV does not exist: {correspondence_path}"
+        )
 
     with correspondence_path.open(newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
@@ -236,7 +311,11 @@ def write_bfm_landmarks_csv(
 
         for row in correspondences:
             mediapipe_index = int(row["mediapipe_index"])
-            landmark = landmarks[mediapipe_index] if 0 <= mediapipe_index < len(landmarks) else None
+            landmark = (
+                landmarks[mediapipe_index]
+                if 0 <= mediapipe_index < len(landmarks)
+                else None
+            )
             coordinate_values = (
                 [
                     landmark.x * width,
@@ -267,6 +346,7 @@ def run_detection(
     correspondence_path: Path = DEFAULT_BFM_CORRESPONDENCES,
     txt_path: Path | None = None,
     bfm_csv_path: Path | None = None,
+    silhouette_mask_path: Path | None = None,
     max_points_to_label: int = 0,
 ) -> int:
     """Run MediaPipe once and write the requested landmark artifacts."""
@@ -291,9 +371,9 @@ def run_detection(
     if txt_path:
         write_landmarks_txt(txt_path, landmarks, width, height, landmark_names)
     if bfm_csv_path:
-        write_bfm_landmarks_csv(
-            bfm_csv_path, correspondences, landmarks, width, height
-        )
+        write_bfm_landmarks_csv(bfm_csv_path, correspondences, landmarks, width, height)
+    if silhouette_mask_path:
+        write_silhouette_mask(silhouette_mask_path, landmarks, width, height, cv2)
 
     if debug_path is not None:
         debug_path.parent.mkdir(parents=True, exist_ok=True)
@@ -320,6 +400,7 @@ def main() -> int:
         correspondence_path=args.bfm_correspondences,
         txt_path=args.txt,
         bfm_csv_path=args.bfm_csv,
+        silhouette_mask_path=args.silhouette_mask,
         max_points_to_label=args.max_points_to_label,
     )
 
@@ -329,6 +410,8 @@ def main() -> int:
         print(f"Saved TXT: {args.txt}")
     if args.bfm_csv:
         print(f"Saved BFM CSV: {args.bfm_csv}")
+    if args.silhouette_mask:
+        print(f"Saved silhouette mask: {args.silhouette_mask}")
     print(f"Saved debug image: {args.debug}")
     return 0
 

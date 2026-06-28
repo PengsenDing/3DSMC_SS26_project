@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -214,116 +213,6 @@ std::vector<MatchedLandmark> BuildMatchedLandmarks(
     throw std::runtime_error(
         "At least 6 matched landmarks are required for fitting; found " +
         std::to_string(matches.size()));
-  }
-  return matches;
-}
-
-std::vector<int> BoundaryVertices(const Eigen::MatrixXi& triangles) {
-  std::unordered_map<std::uint64_t, int> edge_counts;
-  const bool rows_are_faces = triangles.cols() == 3;
-  const int face_count = rows_are_faces ? triangles.rows() : triangles.cols();
-
-  for (int face = 0; face < face_count; ++face) {
-    int indices[3];
-    for (int corner = 0; corner < 3; ++corner) {
-      indices[corner] =
-          rows_are_faces ? triangles(face, corner) : triangles(corner, face);
-    }
-    for (int edge = 0; edge < 3; ++edge) {
-      const std::uint32_t first = static_cast<std::uint32_t>(
-          std::min(indices[edge], indices[(edge + 1) % 3]));
-      const std::uint32_t second = static_cast<std::uint32_t>(
-          std::max(indices[edge], indices[(edge + 1) % 3]));
-      const std::uint64_t key =
-          (static_cast<std::uint64_t>(first) << 32U) | second;
-      ++edge_counts[key];
-    }
-  }
-
-  std::vector<int> boundary;
-  for (const auto& [key, count] : edge_counts) {
-    if (count == 1) {
-      boundary.push_back(static_cast<int>(key >> 32U));
-      boundary.push_back(static_cast<int>(key & 0xffffffffU));
-    }
-  }
-  std::sort(boundary.begin(), boundary.end());
-  boundary.erase(std::unique(boundary.begin(), boundary.end()), boundary.end());
-  return boundary;
-}
-
-std::vector<MatchedLandmark> BuildContourLandmarks(
-    const BfmModel& model,
-    const std::vector<face_reconstruction::Landmark2D>& landmarks,
-    const std::array<double, 7>& camera,
-    double aspect_ratio,
-    const Eigen::VectorXd& shape,
-    const Eigen::VectorXd& expression,
-    int num_shape,
-    int num_expression,
-    double weight) {
-  static constexpr std::array<int, 21> kJawIndices = {
-      234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152,
-      377, 400, 378, 379, 365, 397, 288, 361, 323, 454,
-  };
-
-  std::unordered_map<int, const face_reconstruction::Landmark2D*> observations;
-  for (const auto& landmark : landmarks) {
-    observations[landmark.index] = &landmark;
-  }
-
-  const std::vector<int> boundary = BoundaryVertices(model.triangles());
-  std::vector<Eigen::Vector2d> projected_boundary;
-  projected_boundary.reserve(boundary.size());
-  for (const int vertex_id : boundary) {
-    const Eigen::Vector3d point =
-        model.GetMeanVertex(vertex_id) +
-        ScaledBasisForVertex(model.shape(), vertex_id, num_shape) * shape +
-        ScaledBasisForVertex(model.expression(), vertex_id, num_expression) *
-            expression;
-    projected_boundary.push_back(
-        ProjectPoint(point, camera, aspect_ratio));
-  }
-
-  std::vector<bool> used(boundary.size(), false);
-  std::vector<MatchedLandmark> matches;
-  for (const int mediapipe_index : kJawIndices) {
-    const auto observation = observations.find(mediapipe_index);
-    if (observation == observations.end()) {
-      continue;
-    }
-    const Eigen::Vector2d target(observation->second->x_norm,
-                                 observation->second->y_norm);
-
-    int best = -1;
-    double best_distance = std::numeric_limits<double>::max();
-    for (int index = 0; index < static_cast<int>(boundary.size()); ++index) {
-      if (used[index]) {
-        continue;
-      }
-      const double distance = (projected_boundary[index] - target).squaredNorm();
-      if (distance < best_distance) {
-        best_distance = distance;
-        best = index;
-      }
-    }
-    if (best < 0 || std::sqrt(best_distance) > 0.08) {
-      continue;
-    }
-
-    used[best] = true;
-    MatchedLandmark match;
-    match.name = "contour_" + std::to_string(mediapipe_index);
-    match.mediapipe_index = mediapipe_index;
-    match.bfm_vertex_id = boundary[best];
-    match.target = target;
-    match.mean = model.GetMeanVertex(match.bfm_vertex_id);
-    match.shape_basis =
-        ScaledBasisForVertex(model.shape(), match.bfm_vertex_id, num_shape);
-    match.expression_basis =
-        ScaledBasisForVertex(model.expression(), match.bfm_vertex_id, num_expression);
-    match.weight = weight;
-    matches.push_back(std::move(match));
   }
   return matches;
 }
@@ -602,20 +491,11 @@ FittingResult FitBfmToLandmarks(
                      expression, options.outlier_threshold,
                      &result.rejected_landmark_count);
 
-  // Stage 2 (the only remaining geometric stage besides the camera-only
-  // stage above): contour matches are built once from the Stage-1 camera
-  // with shape/expression still at the mean face, then camera, shape, and
-  // expression are optimized jointly in a single Ceres solve.
-  const std::vector<MatchedLandmark> contour_matches =
-      BuildContourLandmarks(model, landmarks, camera, aspect_ratio,
-                            shape, expression,
-                            num_shape, num_expression, options.contour_weight);
-  std::vector<MatchedLandmark> all_matches = semantic_matches;
-  all_matches.insert(all_matches.end(), contour_matches.begin(),
-                     contour_matches.end());
-
+  // Stage 2 jointly fits camera, identity, and expression using semantic
+  // anchors only. The image silhouette is handled separately with dynamic,
+  // view-dependent correspondences after this stable initialization.
   ceres::Problem joint_problem;
-  AddLandmarkResiduals(joint_problem, all_matches, options, camera.data(),
+  AddLandmarkResiduals(joint_problem, semantic_matches, options, camera.data(),
                        shape.data(), expression.data(), num_shape,
                        num_expression, aspect_ratio);
   ConfigureCameraBounds(joint_problem, camera.data(),
@@ -643,15 +523,12 @@ FittingResult FitBfmToLandmarks(
   result.expression_coefficients = expression;
   result.vertices = GenerateVertices(model, shape, expression);
   result.semantic_landmark_count = static_cast<int>(semantic_matches.size());
-  result.contour_landmark_count = static_cast<int>(contour_matches.size());
+  result.contour_landmark_count = 0;
   result.solver_summary =
       "Camera stage: " + camera_summary.BriefReport() +
       "\nJoint stage: " + joint_summary.BriefReport();
 
-  std::vector<MatchedLandmark> final_matches = semantic_matches;
-  final_matches.insert(final_matches.end(), contour_matches.begin(),
-                       contour_matches.end());
-  for (const auto& match : final_matches) {
+  for (const auto& match : semantic_matches) {
     const Eigen::Vector3d point =
         match.mean + match.shape_basis * shape +
         match.expression_basis * expression;

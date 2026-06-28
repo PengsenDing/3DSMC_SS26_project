@@ -19,7 +19,6 @@ struct FittingOptions {
   int camera_iterations = 100;
   int joint_iterations = 200;
   double landmark_weight = 100.0;
-  double contour_weight = 35.0;
   // Raised proportionally to the increase in free PCA coefficients above,
   // so the optimizer does not use the newly available coefficients to
   // overfit a comparatively small set of 2D landmark observations.
@@ -55,7 +54,7 @@ struct FittingResult {
   Eigen::VectorXd vertices;
   std::vector<LandmarkReprojection> reprojections;
   int semantic_landmark_count = 0;
-  int contour_landmark_count = 0;
+  int contour_landmark_count = 0;  // Always zero: contours use silhouette fitting.
   int rejected_landmark_count = 0;
   double initial_rmse = 0.0;
   double final_rmse = 0.0;

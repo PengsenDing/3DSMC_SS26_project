@@ -8,6 +8,7 @@
 #include "face_recon/mesh_export.h"
 #include "face_recon/photometric_fitting.h"
 #include "face_recon/rasterizer.h"
+#include "face_recon/silhouette_fitting.h"
 #include "face_recon/texture_fitting.h"
 #include "face_reconstruction/landmarks.hpp"
 
@@ -28,12 +29,15 @@ int main(int argc, char* argv[]) {
   std::optional<std::string> output_name;
   std::optional<std::string> landmark_path;
   std::optional<std::string> image_path;
+  std::optional<std::string> silhouette_mask_path;
   bool check_bfm = false;
   bool verbose_optimization = false;
   bool save_diagnostics = false;
   face_recon::FittingOptions fitting_options;
   face_recon::PhotometricOptions photometric_options;
+  face_recon::SilhouetteFittingOptions silhouette_options;
   face_recon::TextureFittingOptions texture_options;
+  bool disable_silhouette_fitting = false;
 
   // Define the available CLI flags and options.
   app.add_option("-m,--model", model_path, "Path to the Basel Face Model HDF5 asset container")->check(CLI::ExistingFile);
@@ -46,6 +50,9 @@ int main(int argc, char* argv[]) {
       ->check(CLI::ExistingFile);
   app.add_option("-i,--image", image_path,
                  "Original face image; enables photo colors and reprojection overlay")
+      ->check(CLI::ExistingFile);
+  app.add_option("--silhouette-mask", silhouette_mask_path,
+                 "Binary target face mask for silhouette-aware geometry fitting")
       ->check(CLI::ExistingFile);
   app.add_option("--correspondences", correspondence_path,
                  "MediaPipe-to-BFM correspondence CSV")
@@ -64,8 +71,6 @@ int main(int argc, char* argv[]) {
                  "Weight keeping normalized focal length near a typical portrait camera");
   app.add_option("--landmark-weight", fitting_options.landmark_weight,
                  "Weight of the sparse landmark reprojection term");
-  app.add_option("--contour-weight", fitting_options.contour_weight,
-                 "Weight of the dynamic face contour term");
   app.add_option("--outlier-threshold", fitting_options.outlier_threshold,
                  "Maximum normalized residual before rejecting a semantic landmark");
   app.add_flag("-v,--verbose-optimization", verbose_optimization,
@@ -86,6 +91,22 @@ int main(int argc, char* argv[]) {
   app.add_option("--photometric-huber-delta",
                  photometric_options.huber_delta,
                  "Huber threshold for RGB residuals in [0,1]");
+  app.add_flag("--no-silhouette-fitting", disable_silhouette_fitting,
+               "Skip mask-driven identity refinement");
+  app.add_option("--silhouette-resolution", silhouette_options.resolution,
+                 "Maximum mask dimension used for silhouette fitting");
+  app.add_option("--silhouette-iterations",
+                 silhouette_options.outer_iterations,
+                 "View-dependent silhouette rematching iterations");
+  app.add_option("--silhouette-weight",
+                 silhouette_options.silhouette_weight,
+                 "Weight of bidirectional silhouette correspondences");
+  app.add_option("--silhouette-semantic-weight",
+                 silhouette_options.semantic_weight,
+                 "Weight preserving the 40 semantic landmarks");
+  app.add_option("--silhouette-shape-regularization",
+                 silhouette_options.shape_regularization,
+                 "BFM identity prior weight during silhouette fitting");
   app.add_option("--texture-stride", texture_options.pixel_stride,
                  "Use every Nth visible pixel during dense RGB fitting");
   app.add_option("--texture-mask-erosion", texture_options.mask_erosion,
@@ -109,13 +130,25 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   if (fitting_options.landmark_weight <= 0.0 ||
-      fitting_options.contour_weight <= 0.0 ||
       fitting_options.shape_regularization < 0.0 ||
       fitting_options.expression_regularization < 0.0 ||
       fitting_options.focal_regularization < 0.0 ||
       fitting_options.outlier_threshold <= 0.0) {
     std::cerr << "[ERROR] Fitting weights and outlier threshold must be "
                  "valid positive values; regularization may be zero.\n";
+    return 1;
+  }
+  if (silhouette_options.resolution <= 0 ||
+      silhouette_options.outer_iterations <= 0 ||
+      silhouette_options.solver_iterations <= 0 ||
+      silhouette_options.sample_stride <= 0 ||
+      silhouette_options.semantic_weight <= 0.0 ||
+      silhouette_options.silhouette_weight <= 0.0 ||
+      silhouette_options.shape_regularization < 0.0 ||
+      silhouette_options.huber_delta < 0.0 ||
+      silhouette_options.maximum_correspondence_distance <= 0.0 ||
+      silhouette_options.semantic_degradation_limit < 1.0) {
+    std::cerr << "[ERROR] Silhouette-fitting options are invalid.\n";
     return 1;
   }
   if (photometric_options.num_albedo_coefficients <= 0 ||
@@ -136,6 +169,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   photometric_options.save_diagnostics = save_diagnostics;
+  silhouette_options.enabled = !disable_silhouette_fitting;
+  silhouette_options.save_diagnostics = save_diagnostics;
   texture_options.save_diagnostics = save_diagnostics;
 
   // Run the core execution pipeline.
@@ -218,10 +253,44 @@ int main(int argc, char* argv[]) {
         std::filesystem::path(output_dir) /
         (compact_output ? "texture_fitting.txt"
                         : stem + "_texture_fitting.txt");
+    const std::filesystem::path silhouette_report_path =
+        std::filesystem::path(output_dir) /
+        (compact_output ? "silhouette_fitting.txt"
+                        : stem + "_silhouette_fitting.txt");
 
     if (!result.usable) {
       std::cerr << "[ERROR] Ceres did not produce a usable fitting result.\n";
       return 1;
+    }
+    if (silhouette_options.enabled) {
+      if (!silhouette_mask_path.has_value()) {
+        std::cerr << "[ERROR] Silhouette fitting is enabled but no "
+                     "--silhouette-mask was provided.\n";
+        return 1;
+      }
+      std::cout << "[INFO] Refining identity from the view-dependent "
+                   "face silhouette...\n";
+      const face_recon::SilhouetteFittingResult silhouette_result =
+          face_recon::RefineGeometryFromSilhouette(
+              *silhouette_mask_path, model, result, silhouette_options,
+              output_dir);
+      if (!face_recon::SaveSilhouetteFittingReport(
+              silhouette_result, silhouette_report_path.string())) {
+        std::cerr << "[ERROR] Could not save silhouette-fitting report.\n";
+        return 1;
+      }
+      if (silhouette_result.usable) {
+        face_recon::ApplySilhouetteResult(silhouette_result, &result);
+        std::cout << "[RESULT] Silhouette Chamfer: "
+                  << silhouette_result.initial.silhouette_chamfer << " -> "
+                  << silhouette_result.final.silhouette_chamfer
+                  << ", IoU: " << silhouette_result.initial.silhouette_iou
+                  << " -> " << silhouette_result.final.silhouette_iou
+                  << "\n";
+      } else {
+        std::cerr << "[WARN] Silhouette refinement made no safe improvement; "
+                     "keeping the semantic-only geometry.\n";
+      }
     }
     Eigen::VectorXd fitted_colors;
     const Eigen::VectorXd* fitted_colors_pointer = nullptr;
