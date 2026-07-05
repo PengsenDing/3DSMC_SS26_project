@@ -11,6 +11,7 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <stdexcept>
 #include <limits>
 #include <algorithm>
 
