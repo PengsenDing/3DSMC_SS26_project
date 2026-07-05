@@ -1,167 +1,233 @@
 # Face Reconstruction
 
-# 3D Face Reconstruction Optimization
-> TUM 3D Scanning and Motion Capture — Summer Semester 2026
+Classical optimization-based 3D face reconstruction for the TUM IN2354 3D
+Scanning and Motion Capture course: fit the Basel Face Model (BFM 2019) to a
+single photograph using MediaPipe landmarks, Ceres, and a custom CPU
+rasterizer.
 
-A lightweight, high-performance C++ pipeline to optimize a 3D Morphable Model (3DMM) based on the Basel Face Model 2019.
+## Setup
 
----
+1. Download `model2019_face12.h5` from the
+   [BFM 2019 website](https://faces.dmi.unibas.ch/bfm/bfm2019.html) and place
+   it at `data/model2019_face12.h5`.
+2. Build the C++ side (requires Eigen, Ceres, glog, HDF5, and OpenCV; CMake
+   fetches CLI11/HighFive/nlohmann-json automatically):
+   ```bash
+   cmake -S . -B build
+   cmake --build build --parallel
+   ```
+   This produces `build/face_reconstruction`.
+3. Set up the Python side (MediaPipe landmark detection):
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install -r requirements.txt
+   ```
+4. Download Google's MediaPipe multiclass segmentation model (the model file
+   is ignored by Git):
+   ```bash
+   curl -L https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite \
+     -o models/selfie_multiclass_256x256.tflite
+   ```
 
-## Required Libraries
+## Run
 
-### 1. Required Libraries (Located in `libs/`)
-Ensure you have the following packages installed on your `libs/` folder:
-These dependencies are already included directly in the repository layout:
-* **Eigen:** Linear algebra and matrix operations.
-* **Ceres Solver:** Non-linear least squares optimization framework.
-* **glog (Google Logging):** Logging infrastructure required by Ceres.
-* **FLANN (1.8.4):** Fast Library for Approximate Nearest Neighbors.
-* **FreeImage:** Image loading and rendering support.
-
-### 2. Auto-Fetched Dependencies (Handled by CMake)
-The following header-only libraries are **automatically downloaded and configured** by CMake during the first build step. *Note: An active internet connection is required for the initial setup:*
-* **HighFive:** Header-only C++ interface for HDF5 parsing.
-* **CLI11:** Command-line argument parsing interface.
-
----
-
-## Data Directory Setup
-
-The `data/` folder is reserved for the Basel Face Model (BFM) dataset. Download the [model2019_face12.h5 file](https://faces.dmi.unibas.ch/bfm/bfm2019.html) inside the `data/` folder.
-
----
-
-## Compilation Steps
-
-We use a standard standard CMake out-of-source build pipeline. Run the following sequence from the repository root directory:
-
-```console
-# 1. Configure the project 
-# This step automatically links the local libs/ folder and pulls down HighFive/CLI11
-cmake -S . -B build
-
-# 2. Compile the target executable using all available CPU cores
-cmake --build build --parallel
-```
----
-
-## Running Options
-
-You can run the executable directly from the repository root directory. The binary leverages CLI11 to provide flexible runtime configuration flags:
-
-```console
-# 1. Configure the project 
-# This step automatically links the local /libs and pulls down HighFive/CLI11
-cmake -S . -B build
-
-# 2. Compile the target executable using all available CPU cores
-cmake --build build --parallel
+```bash
+source .venv/bin/activate
+python reconstruct.py inputs/face.jpg
 ```
 
----
-## Run with configurable settings
+This detects 40 semantic landmark constraints, fits
+camera/identity/expression, removes self-occluded semantic constraints with
+the rasterizer's Z-buffer, refines identity against a dense face silhouette,
+fits appearance (albedo + illumination), fits per-vertex RGB color, and
+exports the mesh and diagnostics. Output goes to one self-contained directory:
 
-Run the code directly with:
-
-```console
-./build/face_reconstruction option_flags
+```text
+reconstructions/face/
+├── face.off                  geometry only, open in MeshLab
+├── face.ply                  colored mesh
+├── fitting.txt               semantic solver report and RMSE
+├── silhouette_fitting.txt    silhouette Chamfer/IoU report
+├── bfm_surface_overlay.png    translucent fitted BFM surface on the photo
+├── rendered_final_overlay.png the result, composited on the input photo
+└── run.json
 ```
 
-### Available Configuration Flags:
-    -c, --check-bfm Model architecture validation: prints out the model parameters dimensions and exports fixed debug PLY meshes.
+Add `--diagnostics` to also keep landmark/visibility/residual debug images.
+By default, MediaPipe's six-class image segmenter extracts the face-skin class
+and saves a filled, largest-component mask. This replaces the old face-oval
+polygon, which does not follow the nose and lips in profile views. Pass
+`--silhouette-mask mask.png` to use a manually corrected or external mask;
+the mask must have the photograph's dimensions.
+Self-occlusion filtering is enabled by default. Pass
+`--no-landmark-visibility-filter` only for comparison/debugging, or adjust the
+inverse-depth comparison with `--landmark-depth-tolerance` (default `1e-4`).
+At strong yaw, landmarks whose semantic name belongs to the far side are also
+removed (`--pose-yaw-threshold`, default `0.55` radians). Gross detections
+outside the face-skin mask are rejected. Boundary landmarks such as the nose
+tip, chin and mouth corners are instead snapped to the nearest mask boundary
+when the correction is small, and receive a stronger fitting weight.
 
-    -m, --model <path> Overrides the default model dataset lookup path. (Defaults to data/model2019_face12.h5).
+For difficult cases, pass `--landmark-overrides corrections.csv`. The CSV may
+correct or disable individual MediaPipe points:
 
-    -o, --output <dir> Specifies the target destination folder where generated PLY meshes, tracking snapshots, and output logs will be written. (Defaults to `results/`).
-
----
-
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab.lrz.de/3dsmc-group-5/face-reconstruction.git
-git branch -M main
-git push -uf origin main
+```csv
+index,x_norm,y_norm,enabled
+4,0.918,0.442,true
+291,,,false
 ```
 
-## Integrate with your tools
+Coordinates are normalized to `[0,1]`. Disabled rows are removed before BFM
+fitting, and all applied changes are recorded in `landmark_overrides.json`.
+Run `python reconstruct.py --help` or `./build/face_reconstruction --help` for
+the full list of tuning flags (regularization weights, PCA component counts,
+pixel strides, etc.).
 
-* [Set up project integrations](https://gitlab.lrz.de/3dsmc-group-5/face-reconstruction/-/settings/integrations)
+Other useful commands:
 
-## Collaborate with your team
+```bash
+# Inspect the BFM model itself
+./build/face_reconstruction --check-bfm
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+# Open face.off or face.ply in MeshLab to inspect the reconstructed mesh
+```
 
-## Test and Deploy
+## Pipeline Steps
 
-Use the built-in continuous integration in GitLab.
+This is organized by *what happens when* (the order `reconstruct.py` actually
+runs things), not by directory:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```text
+0. Python entry point
+   reconstruct.py
+   One command that drives the whole pipeline: it calls step 1 to detect
+   landmarks and invokes the compiled `face_reconstruction` executable to run
+   steps 2-9. It collects every output file into one
+   reconstructions/<name>/ folder.
+        ↓
+1. Landmark detection
+   scripts/detect_landmarks.py
+   Runs Google's MediaPipe Face Landmarker on the input photo. Outputs a CSV
+   with 478 rows: each detected facial point's index, pixel coordinates, and
+   normalized image coordinates. This is the only step that actually looks at
+   the photo to find facial features -- every later step works only with
+   these point coordinates and the photo's raw pixel colors.
 
-***
+   scripts/segment_face.py
+   Runs MediaPipe multiclass image segmentation and extracts class 3
+   (face skin). The largest component is closed and filled to create the
+   silhouette used by step 4. An external/manual mask can override it.
+        ↓
+2. Load the BFM model + landmark data
+   face_recon/bfm_model.h / .cc
+   Opens model2019_face12.h5 and reads the BFM's mean face, the PCA basis
+   matrices and variances for shape/expression/color, and the triangle list
+   (which 3 vertex indices form each of the 55,040 triangles).
 
-# Editing this README
+   include/face_reconstruction/landmarks.hpp + src/landmarks.cpp
+   Reads the landmark CSV from step 1 and the BFM-to-MediaPipe correspondence
+   table (40 rows, e.g. "MediaPipe point #4 = BFM vertex #15841 = nose tip").
+   This table is the only link between a detected 2D point and a 3D model
+   vertex.
+        ↓
+3. Camera + identity + expression fitting (sparse landmark loss)
+   face_recon/fitting.h / .cc
+   tests/fitting_test.cpp   (regression test)
+   The core step. Given the 2D landmark positions (steps 1-2) and the BFM
+   mean face + shape/expression basis (step 2), this solves for the unknowns
+   -- camera rotation/translation/focal length, 199 identity coefficients,
+   and 100 expression coefficients -- using Ceres least-squares. It adjusts
+   every unknown so that projecting the current 3D face through the current
+   camera lands as close as possible to the detected 2D points, in two
+   stages. It first checks observations against the face-skin mask: gross detections are
+   removed, while nearby boundary landmarks can be snapped to the observed
+   mask. The camera-only stage then supplies a coarse pose. At strong yaw,
+   semantic landmarks on the far side are removed. Finally, the mean BFM is
+   rasterized from that pose and each remaining semantic vertex is compared
+   with the inverse-depth Z-buffer in a 3x3 pixel neighborhood. Landmarks
+   behind a nearer facial surface are removed before the joint solve and its
+   residual-based outlier rejection. If the mesh has no topology or fewer
+   than six landmarks remain visible, the filter safely falls back to the
+   original constraints. Output: this person's personalized 3D mesh vertices
+   + fitted camera. Only rows in the 40-point correspondence table
+   participate; no jaw/oval point-to-vertex constraints are added. The fitting
+   report records whether visibility filtering ran and how many constraints it
+   removed.
+        ↓
+4. View-dependent silhouette geometry fitting
+   face_recon/silhouette_fitting.h / .cc
+   tests/silhouette_fitting_test.cpp
+   Renders the current mesh silhouette, samples its visible boundary, and
+   forms bidirectional nearest-boundary matches against the target mask.
+   Ceres refines identity coefficients while the semantic landmarks and BFM
+   PCA prior act as safeguards. The silhouette is rerendered and rematched
+   after every outer iteration, so no fixed BFM jaw correspondence is used.
+   Output: refined geometry plus Chamfer and IoU diagnostics.
+        ↓
+5. Rasterization (visibility test, used by the next two steps)
+   face_recon/rasterizer.h / .cc
+   tests/rasterizer_test.cpp
+   Used once after the coarse camera fit for landmark self-occlusion and again
+   with the refined mesh after step 4. It answers a geometric
+   question: "if I render this mesh from this camera, which triangle is
+   visible at each pixel, and exactly where inside that triangle does the
+   pixel fall?" It projects every vertex to 2D, scans each triangle's pixel
+   range to compute barycentric coordinates, and keeps only the nearest
+   surface where triangles overlap (Z-buffer). Output: for every pixel, its
+   covering triangle ID, depth, and barycentric weights -- the pixel-to-3D-
+   surface lookup table used by steps 6, 7, and 9.
+        ↓
+6. Appearance fitting (albedo + illumination separation)
+   face_recon/photometric_fitting.h / .cc
+   tests/photometric_fitting_test.cpp
+   Using step 5's pixel-to-surface mapping, looks at the actual photo colors
+   and asks: "what skin albedo (BFM color PCA coefficients) and what
+   lighting (4 spherical-harmonics coefficients per RGB channel) would
+   explain the observed pixel colors?" Solved by alternating least squares:
+   fit albedo with lighting fixed, then fit lighting with albedo fixed,
+   repeat. Splitting albedo from lighting (instead of fitting one flat "this
+   is the color" term) keeps the photo's shadows/highlights from getting
+   permanently baked into the estimated skin color.
+        ↓
+7. Dense per-vertex RGB fitting (final visual result)
+   face_recon/texture_fitting.h / .cc
+   tests/texture_fitting_test.cpp
+   With geometry and visibility already fixed (steps 4-5), this solves
+   directly for the RGB color of every vertex so that the interpolated
+   render matches the photo at every visible pixel -- assembled as one
+   sparse linear least-squares system (with a smoothness term and a prior
+   toward the step-6 result), solved directly without Ceres. This is the
+   single biggest quality jump in the pipeline: RGB error drops from 0.089
+   to 0.013, and it's the main reason rendered_final.png looks close to a
+   real photo.
+        ↓
+8. Mesh export + fitting report
+   face_recon/mesh_export.h / .cc
+   Pure I/O -- computes nothing new. Writes the step-4 vertices plus
+   whichever colors are available (step 6 or 7) to disk as .off (geometry
+   only, for MeshLab) and .ply (geometry + color), and writes fitting.txt
+   with the solver's RMSE numbers and fitted parameters.
+        ↓
+9. Diagnostic image export (overlay / depth / visibility / silhouette)
+   face_recon/image_fitting.h / .cc
+   Renders the intermediate results from earlier steps as PNGs purely for
+   inspection -- none of this feeds back into the mesh or its colors:
+   bfm_surface_overlay.png (a translucent normal-shaded BFM surface generated
+   by the CPU rasterizer), overlay.png (detected vs. projected landmarks,
+   to check step 3's accuracy), raster_depth.png (visualized depth buffer, to check step 5),
+   visibility.png (visible-face mask), and silhouette target/initial/refined
+   masks plus a colored boundary overlay. Only generated when --diagnostics
+   is passed.
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Directories not part of the runtime pipeline above:
 
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+```text
+tests/            Regression tests; run with `ctest --test-dir build`
+data/             BFM model file, active correspondence CSV, and test datasets
+inputs/           Source photographs only
+reconstructions/  One output directory per input photo (see `Run` above)
+notes/            Running work-log notes
+CMakeLists.txt    Build configuration
+```

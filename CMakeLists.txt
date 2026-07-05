@@ -1,142 +1,178 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.20)
 
-# Silence legacy policy errors from external dependencies (HighFive/CLI11).
-if(POLICY CMP0167)
-    cmake_policy(SET CMP0167 NEW)
-endif()
-# Set a global minimum policy version to bypass the < 3.5 fatal error.
-set(CMAKE_POLICY_VERSION_MINIMUM "3.14")
+# HighFive 2.9.0 declares compatibility with an old CMake policy version.
+# CMake 4 requires consumers to opt into a newer minimum for that dependency.
+set(CMAKE_POLICY_VERSION_MINIMUM "3.5")
 
-set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "Allowed build types" FORCE)
-project(face_reconstruction)
+project(
+    face_reconstruction
+    VERSION 0.1.0
+    DESCRIPTION "Classical optimization based 3D face reconstruction"
+    LANGUAGES C CXX
+)
+
+include(CTest)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Options.
-set(LIBRARY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs CACHE PATH "Path to lib folder")
-set(Eigen3_DIR ${LIBRARY_DIR}/Eigen/share/eigen3/cmake CACHE PATH "Path to installed Eigen")
-set(Ceres_DIR ${LIBRARY_DIR}/Ceres/CMake CACHE PATH "Path to installed Ceres")
-set(Flann_INCLUDE_DIR ${LIBRARY_DIR}/Flann-1.8.4/ CACHE PATH "Path to Flann source folder")
-# Dual Compatibility Switch for Glog.
-if(WIN32)
-    set(glog_DIR ${LIBRARY_DIR}/glog-lib/lib/cmake/glog CACHE PATH "Path to installed glog")
-else()
-    # On Linux, CMake will use the users's global glog.
-    set(glog_DIR "/usr/lib/cmake/glog" CACHE PATH "Path to installed glog")
-endif(WIN32)
+option(FACE_RECONSTRUCTION_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
-# Use pre-compiled libraries on Windows and on Linux.
-if(WIN32)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(FreeImage_INCLUDE_DIR ${LIBRARY_DIR}/FreeImage-3.18.0/Dist/x64/ CACHE PATH "Path to FreeImage header file")
-        set(FreeImage_LIBRARY_DIR ${LIBRARY_DIR}/FreeImage-3.18.0/Dist/x64/ CACHE PATH "Path to FreeImage .lib/.dll folder")
-    elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-        set(FreeImage_INCLUDE_DIR ${LIBRARY_DIR}/FreeImage-3.18.0/Dist/x32/ CACHE PATH "Path to FreeImage header file")
-        set(FreeImage_LIBRARY_DIR ${LIBRARY_DIR}/FreeImage-3.18.0/Dist/x32/ CACHE PATH "Path to FreeImage .lib/.dll folder")
-    endif()
-else()
-    # Linux Setup.
-    set(FreeImage_INCLUDE_DIR "/usr/include")
-    set(FreeImage_LIBRARIES "freeimage") # Linker automatically finds /usr/lib/libfreeimage.so.
-endif(WIN32)
+# Allow the dependency bundle used by week_2 while still supporting system
+# installations (for example Homebrew on macOS).
+set(LIBRARY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs" CACHE PATH "Optional local dependency directory")
+if(EXISTS "${LIBRARY_DIR}/Eigen/share/eigen3/cmake")
+    set(Eigen3_DIR "${LIBRARY_DIR}/Eigen/share/eigen3/cmake" CACHE PATH "Eigen CMake directory")
+endif()
+if(EXISTS "${LIBRARY_DIR}/Ceres/CMake")
+    set(Ceres_DIR "${LIBRARY_DIR}/Ceres/CMake" CACHE PATH "Ceres CMake directory")
+endif()
+if(WIN32 AND EXISTS "${LIBRARY_DIR}/glog-lib/lib/cmake/glog")
+    set(glog_DIR "${LIBRARY_DIR}/glog-lib/lib/cmake/glog" CACHE PATH "glog CMake directory")
+endif()
 
-# Set C++ flags - C++17 (HighFive requires modern C++ traits).
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(PkgConfig REQUIRED)
+find_package(Eigen3 3.4 REQUIRED NO_MODULE)
+find_package(Ceres CONFIG REQUIRED)
+find_package(glog CONFIG REQUIRED)
+find_package(HDF5 REQUIRED COMPONENTS C CXX)
+pkg_check_modules(OpenCV REQUIRED IMPORTED_TARGET opencv4)
 
-find_package(Ceres REQUIRED)
-find_package(glog REQUIRED)
-get_target_property(GLOG_DLL_PATH_DEBUG glog::glog IMPORTED_LOCATION_DEBUG)
-get_target_property(GLOG_DLL_PATH_RELEASE glog::glog IMPORTED_LOCATION_RELEASE)
-
-# Automatic External Library Management (No manual setup needed).
 include(FetchContent)
 
-# Fetch CLI11 for command line option handling.
+set(HIGHFIVE_USE_BOOST OFF CACHE BOOL "Disable Boost support in HighFive" FORCE)
+set(HIGHFIVE_USE_EIGEN ON CACHE BOOL "Enable Eigen support in HighFive" FORCE)
+set(HIGHFIVE_BUILD_DOCS OFF CACHE BOOL "Disable HighFive documentation" FORCE)
+set(HIGHFIVE_EXAMPLES OFF CACHE BOOL "Disable HighFive examples" FORCE)
+set(HIGHFIVE_UNIT_TESTS OFF CACHE BOOL "Disable HighFive tests" FORCE)
+
 FetchContent_Declare(
     cli11
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG        v2.4.2
+    GIT_TAG v2.4.2
 )
-FetchContent_MakeAvailable(cli11)
-
-# Find or build the core HDF5 system dependency.
-# (On Linux/Mac it uses system HDF5; on Windows it falls back gracefully or uses vcpkg).
-find_package(HDF5 REQUIRED COMPONENTS C CXX)
-# Tell HighFive we are using Eigen, not Boost.
-# Define the exact path to local Eigen header files.
-set(LOCAL_EIGEN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/Eigen/include/eigen3")
-
-# Hardcode variables using $<BUILD_INTERFACE:...> to bypass the generation error.
-set(Eigen3_INCLUDE_DIRS "$<BUILD_INTERFACE:${LOCAL_EIGEN_INCLUDE_DIR}>" CACHE STRING "TUM Eigen Headers" FORCE)
-set(EIGEN3_INCLUDE_DIR  "$<BUILD_INTERFACE:${LOCAL_EIGEN_INCLUDE_DIR}>" CACHE STRING "TUM Eigen Headers" FORCE)
-set(EIGEN3_INCLUDE_DIRS "$<BUILD_INTERFACE:${LOCAL_EIGEN_INCLUDE_DIR}>" CACHE STRING "TUM Eigen Headers" FORCE)
-set(Eigen3_FOUND TRUE CACHE BOOL "Force Eigen Found" FORCE)
-set(EIGEN3_FOUND TRUE CACHE BOOL "Force Eigen Found" FORCE)
-
-# Explicitly create the required modern CMake target HighFive links against.
-if(NOT TARGET Eigen3::Eigen)
-    add_library(Eigen3::Eigen INTERFACE IMPORTED GLOBAL)
-    target_include_directories(Eigen3::Eigen INTERFACE "${LOCAL_EIGEN_INCLUDE_DIR}")
-endif()
-
-# Standard HighFive configuration toggles.
-set(HIGHFIVE_USE_BOOST OFF CACHE INTERNAL "Disable Boost backend for HighFive")
-set(HIGHFIVE_USE_EIGEN ON CACHE INTERNAL "Enable Eigen backend for HighFive")
-set(HIGHFIVE_BUILD_DOCS OFF CACHE INTERNAL "Disable documentation building")
-set(HIGHFIVE_EXAMPLES OFF CACHE INTERNAL "Disable building HighFive examples")
-set(HIGHFIVE_UNIT_TESTS OFF CACHE INTERNAL "Disable building HighFive tests")
-
-# Fetch HighFive (Native Eigen to HDF5 binder).
 FetchContent_Declare(
     highfive
     GIT_REPOSITORY https://github.com/BlueBrain/HighFive.git
-    GIT_TAG        v2.9.0
+    GIT_TAG v2.9.0
 )
-FetchContent_MakeAvailable(highfive)
-
-# Fetch nlohmann/json for metadata string decoding.
 FetchContent_Declare(
     json
     URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-FetchContent_MakeAvailable(json)
+FetchContent_MakeAvailable(cli11 highfive json)
 
-add_definitions("-D_DISABLE_EXTENDED_ALIGNED_STORAGE")
+function(face_reconstruction_enable_warnings target)
+    target_compile_options(
+        ${target}
+        PRIVATE
+            $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+            $<$<AND:$<BOOL:${FACE_RECONSTRUCTION_WARNINGS_AS_ERRORS}>,$<CXX_COMPILER_ID:AppleClang,Clang,GNU>>:-Werror>
+    )
+endfunction()
 
-set(HEADER_FILES
+# Basel Face Model loader and inspection executable from week_2.
+add_library(
+    bfm_model
+    face_recon/bfm_model.cc
     face_recon/bfm_model.h
 )
-
-set(SOURCE_FILES 
-    face_recon/bfm_model.cc
-    face_recon/main.cc
+target_include_directories(
+    bfm_model
+    PUBLIC
+        "${PROJECT_SOURCE_DIR}"
+        ${HDF5_INCLUDE_DIRS}
 )
+target_link_libraries(
+    bfm_model
+    PUBLIC
+        Eigen3::Eigen
+        glog::glog
+        HighFive
+        nlohmann_json::nlohmann_json
+)
+face_reconstruction_enable_warnings(bfm_model)
 
-link_directories(${FreeImage_LIBRARY_DIR})
-add_executable(face_reconstruction ${SOURCE_FILES} ${HEADER_FILES})
-target_link_libraries(face_reconstruction ceres ${FreeImage_LIBRARIES} Eigen3::Eigen glog::glog HighFive CLI11::CLI11 nlohmann_json::nlohmann_json) 
-target_include_directories(face_reconstruction PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${EIGEN3_INCLUDE_DIR} ${FreeImage_INCLUDE_DIR} ${Flann_INCLUDE_DIR} ${HDF5_INCLUDE_DIRS})
+add_library(
+    reconstruction_fitting
+    face_recon/dense_fitting.cc
+    face_recon/dense_fitting.h
+    face_recon/fitting.cc
+    face_recon/fitting.h
+    face_recon/image_fitting.cc
+    face_recon/image_fitting.h
+    face_recon/mesh_export.cc
+    face_recon/mesh_export.h
+    face_recon/photometric_fitting.cc
+    face_recon/photometric_fitting.h
+    face_recon/rasterizer.cc
+    face_recon/rasterizer.h
+    face_recon/silhouette_fitting.cc
+    face_recon/silhouette_fitting.h
+    face_recon/texture_fitting.cc
+    face_recon/texture_fitting.h
+    src/landmarks.cpp
+)
+target_include_directories(
+    reconstruction_fitting
+    PUBLIC
+        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/include"
+)
+target_link_libraries(
+    reconstruction_fitting
+    PUBLIC
+        bfm_model
+        Ceres::ceres
+        Eigen3::Eigen
+        PkgConfig::OpenCV
+)
+face_reconstruction_enable_warnings(reconstruction_fitting)
 
-# On Windows copy dll to executable folder.
+add_executable(face_reconstruction face_recon/main.cc)
+target_link_libraries(
+    face_reconstruction
+    PRIVATE
+        reconstruction_fitting
+        CLI11::CLI11
+)
+face_reconstruction_enable_warnings(face_reconstruction)
+
+if(BUILD_TESTING)
+    add_executable(fitting_test tests/fitting_test.cpp)
+    target_link_libraries(fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(fitting_test)
+    add_test(NAME fitting_test COMMAND fitting_test)
+
+    add_executable(rasterizer_test tests/rasterizer_test.cpp)
+    target_link_libraries(rasterizer_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(rasterizer_test)
+    add_test(NAME rasterizer_test COMMAND rasterizer_test)
+
+    add_executable(photometric_fitting_test tests/photometric_fitting_test.cpp)
+    target_link_libraries(photometric_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(photometric_fitting_test)
+    add_test(NAME photometric_fitting_test COMMAND photometric_fitting_test)
+
+    add_executable(texture_fitting_test tests/texture_fitting_test.cpp)
+    target_link_libraries(texture_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(texture_fitting_test)
+    add_test(NAME texture_fitting_test COMMAND texture_fitting_test)
+
+    add_executable(silhouette_fitting_test tests/silhouette_fitting_test.cpp)
+    target_link_libraries(silhouette_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(silhouette_fitting_test)
+    add_test(NAME silhouette_fitting_test COMMAND silhouette_fitting_test)
+
+    add_executable(dense_fitting_test tests/dense_fitting_test.cpp)
+    target_link_libraries(dense_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(dense_fitting_test)
+    add_test(NAME dense_fitting_test COMMAND dense_fitting_test)
+endif()
+
 if(WIN32)
-    # Visual Studio properties.
-    set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT face_reconstruction)
-    set_property(TARGET face_reconstruction PROPERTY VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/)
-
-    # On Windows copy dll to executable folder.
-    add_custom_command(TARGET face_reconstruction POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FreeImage_LIBRARY_DIR}/FreeImage.dll"
-            ${CMAKE_BINARY_DIR})
-    
-    add_custom_command(TARGET face_reconstruction POST_BUILD        
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different          
-            "${GLOG_DLL_PATH_DEBUG}"                           
-            ${CMAKE_BINARY_DIR})                     
-    
-    add_custom_command(TARGET face_reconstruction POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${GLOG_DLL_PATH_RELEASE}"
-            ${CMAKE_BINARY_DIR})
-endif(WIN32)
+    set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT face_reconstruction)
+endif()

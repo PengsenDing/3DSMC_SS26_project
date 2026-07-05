@@ -1,0 +1,12 @@
+solution_usable: yes
+completed_outer_iterations: 1
+silhouette_correspondences: 48
+initial_semantic_rmse: 0.01214615778
+initial_silhouette_chamfer: 0.05168786829
+initial_silhouette_iou: 0.9580470163
+final_semantic_rmse: 0.01226932302
+final_silhouette_chamfer: 0.04573066684
+final_silhouette_iou: 0.9685352622
+
+Outer 1: Ceres Solver Report: Iterations: 4, Initial cost: 3.843952e-01, Final cost: 3.684858e-01, Termination: CONVERGENCE, chamfer 0.0516879 -> 0.0457307, semantic 0.0121462 -> 0.0122693 (accepted)
+Outer 2: Ceres Solver Report: Iterations: 2, Initial cost: 3.557129e-01, Final cost: 3.556542e-01, Termination: CONVERGENCE, chamfer 0.0457307 -> 0.0457307, semantic 0.0122693 -> 0.0122818 (rejected)

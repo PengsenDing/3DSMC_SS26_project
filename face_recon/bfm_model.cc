@@ -9,6 +9,7 @@
 #include <fstream>   
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include <vector>
 #include <stdexcept>
 #include <limits>

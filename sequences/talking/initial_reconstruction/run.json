@@ -1,0 +1,15 @@
+{
+  "created_utc": "2026-07-05T14:08:05.586071+00:00",
+  "input_image": "/Users/dingpengsen/Desktop/IN2354 3DSMC/face-reconstruction/sequences/talking/frames/frame_000000.png",
+  "bfm_model": "/Users/dingpengsen/Desktop/IN2354 3DSMC/face-reconstruction/data/model2019_face12.h5",
+  "landmark_count": 478,
+  "artifacts": {
+    "mesh_off": "face.off",
+    "mesh_ply": "face.ply",
+    "fitting_report": "fitting.txt",
+    "bfm_surface_overlay": "bfm_surface_overlay.png",
+    "rendered_final": "rendered_final.png",
+    "rendered_final_overlay": "rendered_final_overlay.png",
+    "silhouette_fitting_report": "silhouette_fitting.txt"
+  }
+}
