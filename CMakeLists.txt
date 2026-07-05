@@ -38,12 +38,7 @@ find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 find_package(Ceres CONFIG REQUIRED)
 find_package(glog CONFIG REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
-find_package(OpenGL REQUIRED)
-
 pkg_check_modules(OpenCV REQUIRED IMPORTED_TARGET opencv4)
-pkg_check_modules(GLEW REQUIRED IMPORTED_TARGET glew)
-pkg_check_modules(SFML_WINDOW REQUIRED IMPORTED_TARGET sfml-window)
-pkg_check_modules(SFML_SYSTEM REQUIRED IMPORTED_TARGET sfml-system)
 
 include(FetchContent)
 
@@ -103,6 +98,8 @@ face_reconstruction_enable_warnings(bfm_model)
 
 add_library(
     reconstruction_fitting
+    face_recon/dense_fitting.cc
+    face_recon/dense_fitting.h
     face_recon/fitting.cc
     face_recon/fitting.h
     face_recon/image_fitting.cc
@@ -169,39 +166,12 @@ if(BUILD_TESTING)
     target_link_libraries(silhouette_fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(silhouette_fitting_test)
     add_test(NAME silhouette_fitting_test COMMAND silhouette_fitting_test)
+
+    add_executable(dense_fitting_test tests/dense_fitting_test.cpp)
+    target_link_libraries(dense_fitting_test PRIVATE reconstruction_fitting)
+    face_reconstruction_enable_warnings(dense_fitting_test)
+    add_test(NAME dense_fitting_test COMMAND dense_fitting_test)
 endif()
-
-# OBJ viewer and MediaPipe landmark CSV tooling from landmark_detection.
-add_library(
-    landmark_viewer_core
-    src/app.cpp
-    src/landmarks.cpp
-    src/mesh.cpp
-    src/obj_loader.cpp
-    src/ply_loader.cpp
-    src/viewer.cpp
-)
-target_include_directories(
-    landmark_viewer_core
-    PUBLIC
-        "${PROJECT_SOURCE_DIR}/include"
-)
-target_link_libraries(
-    landmark_viewer_core
-    PUBLIC
-        Eigen3::Eigen
-        Ceres::ceres
-        OpenGL::GL
-        PkgConfig::OpenCV
-        PkgConfig::GLEW
-        PkgConfig::SFML_WINDOW
-        PkgConfig::SFML_SYSTEM
-)
-face_reconstruction_enable_warnings(landmark_viewer_core)
-
-add_executable(landmark_viewer src/main.cpp)
-target_link_libraries(landmark_viewer PRIVATE landmark_viewer_core)
-face_reconstruction_enable_warnings(landmark_viewer)
 
 if(WIN32)
     set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT face_reconstruction)

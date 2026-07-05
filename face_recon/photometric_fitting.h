@@ -16,6 +16,9 @@ struct PhotometricOptions {
   int num_albedo_coefficients = 30;
   int pixel_stride = 2;
   int mask_erosion = 1;
+  // Binary mask of external occluders (hair, hands, clothes, accessories);
+  // pixels under it never contribute color observations. Empty disables it.
+  std::string occluder_mask_path;
   int illumination_iterations = 5;
   int joint_iterations = 4;
   double albedo_regularization = 0.1;

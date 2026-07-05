@@ -33,6 +33,12 @@ struct FittingOptions {
   // Rasterizer stores inverse optical depth; this is an absolute tolerance in
   // that same space when comparing a landmark vertex with the Z-buffer.
   float landmark_visibility_depth_tolerance = 1.0e-4f;
+  bool filter_landmarks_by_pose = true;
+  double pose_yaw_threshold = 0.55;
+  // Optional binary face-skin mask used to reject gross detections outside
+  // the observed facial surface before camera initialization.
+  std::string landmark_mask_path;
+  double landmark_mask_tolerance = 0.015;
   bool verbose = false;
 };
 
@@ -50,6 +56,7 @@ struct LandmarkReprojection {
   int bfm_vertex_id = 0;
   Eigen::Vector2d observed = Eigen::Vector2d::Zero();
   Eigen::Vector2d projected = Eigen::Vector2d::Zero();
+  double weight_multiplier = 1.0;
 };
 
 struct FittingResult {
@@ -62,8 +69,12 @@ struct FittingResult {
   int semantic_landmark_count = 0;
   int contour_landmark_count = 0;  // Always zero: contours use silhouette fitting.
   int occluded_landmark_count = 0;
+  int pose_rejected_landmark_count = 0;
+  int mask_rejected_landmark_count = 0;
+  int mask_corrected_landmark_count = 0;
   int rejected_landmark_count = 0;
   bool visibility_filter_applied = false;
+  double estimated_yaw = 0.0;
   double initial_rmse = 0.0;
   double final_rmse = 0.0;
   std::string solver_summary;
@@ -82,6 +93,8 @@ Eigen::Vector2d ProjectVertex(const Eigen::Vector3d& vertex,
                               const CameraParameters& camera);
 Eigen::VectorXd ApplyCameraRotation(const Eigen::VectorXd& vertices,
                                     const CameraParameters& camera);
+bool IsFarSideLandmark(const std::string& name, double yaw,
+                       double yaw_threshold);
 
 }  // namespace face_recon
 

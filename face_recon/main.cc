@@ -3,6 +3,7 @@
 // Basel Face Model, and orchestrates the facial alignment optimization loops.
 
 #include "face_recon/bfm_model.h"
+#include "face_recon/dense_fitting.h"
 #include "face_recon/fitting.h"
 #include "face_recon/image_fitting.h"
 #include "face_recon/mesh_export.h"
@@ -30,6 +31,7 @@ int main(int argc, char* argv[]) {
   std::optional<std::string> landmark_path;
   std::optional<std::string> image_path;
   std::optional<std::string> silhouette_mask_path;
+  std::optional<std::string> occluder_mask_path;
   bool check_bfm = false;
   bool verbose_optimization = false;
   bool save_diagnostics = false;
@@ -37,8 +39,12 @@ int main(int argc, char* argv[]) {
   face_recon::PhotometricOptions photometric_options;
   face_recon::SilhouetteFittingOptions silhouette_options;
   face_recon::TextureFittingOptions texture_options;
+  face_recon::DenseFittingOptions dense_options;
+  bool disable_dense_fitting = false;
+  bool disable_dense_pose = false;
   bool disable_silhouette_fitting = false;
   bool disable_landmark_visibility_filter = false;
+  bool disable_pose_landmark_filter = false;
 
   // Define the available CLI flags and options.
   app.add_option("-m,--model", model_path, "Path to the Basel Face Model HDF5 asset container")->check(CLI::ExistingFile);
@@ -54,6 +60,10 @@ int main(int argc, char* argv[]) {
       ->check(CLI::ExistingFile);
   app.add_option("--silhouette-mask", silhouette_mask_path,
                  "Binary target face mask for silhouette-aware geometry fitting")
+      ->check(CLI::ExistingFile);
+  app.add_option("--occluder-mask", occluder_mask_path,
+                 "Binary mask of external occluders (hair/hands/clothes); "
+                 "excluded from appearance sampling and silhouette matching")
       ->check(CLI::ExistingFile);
   app.add_option("--correspondences", correspondence_path,
                  "MediaPipe-to-BFM correspondence CSV")
@@ -80,6 +90,13 @@ int main(int argc, char* argv[]) {
   app.add_option("--landmark-depth-tolerance",
                  fitting_options.landmark_visibility_depth_tolerance,
                  "Inverse-depth Z-buffer tolerance for landmark visibility");
+  app.add_flag("--no-pose-landmark-filter", disable_pose_landmark_filter,
+               "Keep far-side semantic landmarks at strong yaw angles");
+  app.add_option("--pose-yaw-threshold", fitting_options.pose_yaw_threshold,
+                 "Absolute yaw in radians for far-side landmark rejection");
+  app.add_option("--landmark-mask-tolerance",
+                 fitting_options.landmark_mask_tolerance,
+                 "Allowed normalized distance outside the face-skin mask");
   app.add_flag("-v,--verbose-optimization", verbose_optimization,
                "Print Ceres iteration progress");
   app.add_flag("--diagnostics", save_diagnostics,
@@ -122,6 +139,24 @@ int main(int argc, char* argv[]) {
                  "Weight retaining initialized vertex RGB values");
   app.add_option("--texture-smoothness", texture_options.smoothness_weight,
                  "Mesh-edge smoothness weight for fitted vertex RGB values");
+  app.add_flag("--no-dense-fitting", disable_dense_fitting,
+               "Skip the dense photometric expression/pose refinement");
+  app.add_option("--dense-expression-components",
+                 dense_options.num_expression_coefficients,
+                 "Expression coefficients driven by the dense photometric term");
+  app.add_option("--dense-stride", dense_options.pixel_stride,
+                 "Use every Nth visible pixel during dense photometric fitting");
+  app.add_option("--dense-outer-iterations", dense_options.outer_iterations,
+                 "Re-rasterization (visibility refresh) iterations");
+  app.add_option("--dense-landmark-weight", dense_options.landmark_weight,
+                 "Weight of the semantic landmark anchors in the dense problem");
+  app.add_option("--dense-expression-regularization",
+                 dense_options.expression_regularization,
+                 "Expression PCA prior weight during dense fitting");
+  app.add_option("--dense-huber-delta", dense_options.huber_delta,
+                 "Huber threshold for dense RGB residuals in [0,1]");
+  app.add_flag("--dense-no-pose", disable_dense_pose,
+               "Keep rotation/translation fixed during dense fitting");
 
   // Execute the parse routine safely
   try {
@@ -141,7 +176,9 @@ int main(int argc, char* argv[]) {
       fitting_options.expression_regularization < 0.0 ||
       fitting_options.focal_regularization < 0.0 ||
       fitting_options.outlier_threshold <= 0.0 ||
-      fitting_options.landmark_visibility_depth_tolerance <= 0.0f) {
+      fitting_options.landmark_visibility_depth_tolerance <= 0.0f ||
+      fitting_options.pose_yaw_threshold <= 0.0 ||
+      fitting_options.landmark_mask_tolerance < 0.0) {
     std::cerr << "[ERROR] Fitting weights and outlier threshold must be "
                  "valid positive values; regularization may be zero.\n";
     return 1;
@@ -176,12 +213,34 @@ int main(int argc, char* argv[]) {
                  "pixel stride must be positive.\n";
     return 1;
   }
+  if (dense_options.num_expression_coefficients <= 0 ||
+      dense_options.pixel_stride <= 0 ||
+      dense_options.mask_erosion < 0 ||
+      dense_options.outer_iterations <= 0 ||
+      dense_options.solver_iterations <= 0 ||
+      dense_options.landmark_weight < 0.0 ||
+      dense_options.expression_regularization < 0.0 ||
+      dense_options.huber_delta < 0.0) {
+    std::cerr << "[ERROR] Dense photometric fitting options are invalid.\n";
+    return 1;
+  }
   photometric_options.save_diagnostics = save_diagnostics;
   fitting_options.filter_occluded_landmarks =
       !disable_landmark_visibility_filter;
+  fitting_options.filter_landmarks_by_pose = !disable_pose_landmark_filter;
   silhouette_options.enabled = !disable_silhouette_fitting;
   silhouette_options.save_diagnostics = save_diagnostics;
   texture_options.save_diagnostics = save_diagnostics;
+  dense_options.enabled = !disable_dense_fitting;
+  dense_options.optimize_pose = !disable_dense_pose;
+  dense_options.save_diagnostics = save_diagnostics;
+  dense_options.verbose = verbose_optimization;
+  if (occluder_mask_path.has_value()) {
+    photometric_options.occluder_mask_path = *occluder_mask_path;
+    texture_options.occluder_mask_path = *occluder_mask_path;
+    silhouette_options.occluder_mask_path = *occluder_mask_path;
+    dense_options.occluder_mask_path = *occluder_mask_path;
+  }
 
   // Run the core execution pipeline.
   std::cout << "[INFO] Initializing Face Reconstruction Pipeline...\n";
@@ -209,6 +268,8 @@ int main(int argc, char* argv[]) {
 
   if (landmark_path.has_value()) {
     fitting_options.verbose = verbose_optimization;
+    fitting_options.landmark_mask_path =
+        silhouette_mask_path.has_value() ? *silhouette_mask_path : "";
     std::cout << "[INFO] Loading sparse landmark observations...\n";
     const auto landmarks =
         face_reconstruction::load_landmarks_csv(*landmark_path);
@@ -251,6 +312,10 @@ int main(int argc, char* argv[]) {
     const std::filesystem::path visibility_path =
         std::filesystem::path(output_dir) /
         (compact_output ? "visibility.png" : stem + "_visibility.png");
+    const std::filesystem::path surface_overlay_path =
+        std::filesystem::path(output_dir) /
+        (compact_output ? "bfm_surface_overlay.png"
+                        : stem + "_bfm_surface_overlay.png");
     const std::filesystem::path intrinsic_albedo_mesh_path =
         std::filesystem::path(output_dir) /
         (compact_output ? stem + "_albedo.ply"
@@ -267,6 +332,10 @@ int main(int argc, char* argv[]) {
         std::filesystem::path(output_dir) /
         (compact_output ? "silhouette_fitting.txt"
                         : stem + "_silhouette_fitting.txt");
+    const std::filesystem::path dense_report_path =
+        std::filesystem::path(output_dir) /
+        (compact_output ? "dense_fitting.txt"
+                        : stem + "_dense_fitting.txt");
 
     if (!result.usable) {
       std::cerr << "[ERROR] Ceres did not produce a usable fitting result.\n";
@@ -312,6 +381,14 @@ int main(int argc, char* argv[]) {
       rasterization = face_recon::RasterizeMesh(
           result.vertices, model.triangles(), result.camera,
           image_size.x(), image_size.y());
+      const Eigen::VectorXd camera_normals = face_recon::ApplyCameraRotation(
+          face_recon::ComputeVertexNormals(result.vertices, model.triangles()),
+          result.camera);
+      if (!face_recon::SaveBfmSurfaceOverlay(
+              *image_path, model.triangles(), camera_normals, *rasterization,
+              surface_overlay_path.string())) {
+        return 1;
+      }
       std::cout << "[INFO] Fitting BFM albedo and first-order SH illumination...\n";
       photometric_result = face_recon::FitPhotometricAppearance(
           *image_path, model, result.vertices, result.camera, *rasterization,
@@ -320,6 +397,44 @@ int main(int argc, char* argv[]) {
         std::cerr << "[WARN] Intrinsic albedo/illumination fitting did not "
                      "improve RGB error; dense texture fitting will still "
                      "optimize the primary visual result.\n";
+      }
+      if (dense_options.enabled) {
+        std::cout << "[INFO] Refining expression and pose against the dense "
+                     "photometric term...\n";
+        const face_recon::DenseFittingResult dense_result =
+            face_recon::RefineExpressionDense(
+                *image_path, model, result, *photometric_result,
+                dense_options, output_dir);
+        std::cout << "[RESULT] Dense photometric RMSE: "
+                  << dense_result.initial_photometric_rmse << " -> "
+                  << dense_result.final_photometric_rmse
+                  << ", landmark RMSE: "
+                  << dense_result.initial_landmark_rmse << " -> "
+                  << dense_result.final_landmark_rmse << "\n";
+        if (save_diagnostics &&
+            !face_recon::SaveDenseFittingReport(
+                dense_result, dense_report_path.string())) {
+          std::cerr << "[ERROR] Could not save dense-fitting report.\n";
+          return 1;
+        }
+        if (dense_result.usable) {
+          result.camera = dense_result.camera;
+          result.expression_coefficients =
+              dense_result.expression_coefficients;
+          result.vertices = dense_result.vertices;
+          // Downstream appearance and texture fitting must see the refined
+          // geometry, so refresh the pixel-to-surface mapping and re-separate
+          // albedo from illumination once.
+          rasterization = face_recon::RasterizeMesh(
+              result.vertices, model.triangles(), result.camera,
+              image_size.x(), image_size.y());
+          photometric_result = face_recon::FitPhotometricAppearance(
+              *image_path, model, result.vertices, result.camera,
+              *rasterization, photometric_options, output_dir);
+        } else {
+          std::cerr << "[WARN] Dense photometric refinement made no safe "
+                       "improvement; keeping the landmark-based expression.\n";
+        }
       }
       fitted_colors =
           photometric_result->fitted_vertex_albedo.size() ==

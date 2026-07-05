@@ -2,42 +2,46 @@
 
 Classical optimization-based 3D face reconstruction for the TUM IN2354 3D
 Scanning and Motion Capture course: fit the Basel Face Model (BFM 2019) to a
-single photograph using MediaPipe landmarks, Ceres, a custom CPU rasterizer,
-and a standalone OpenGL mesh viewer.
+single photograph using MediaPipe landmarks, Ceres, and a custom CPU
+rasterizer.
 
 ## Setup
 
 1. Download `model2019_face12.h5` from the
    [BFM 2019 website](https://faces.dmi.unibas.ch/bfm/bfm2019.html) and place
    it at `data/model2019_face12.h5`.
-2. Build the C++ side (requires Eigen, Ceres, glog, HDF5, OpenCV, OpenGL,
-   GLEW, SFML; CMake fetches CLI11/HighFive/nlohmann-json automatically):
+2. Build the C++ side (requires Eigen, Ceres, glog, HDF5, and OpenCV; CMake
+   fetches CLI11/HighFive/nlohmann-json automatically):
    ```bash
    cmake -S . -B build
    cmake --build build --parallel
    ```
-   This produces `build/face_reconstruction` (fitting) and
-   `build/landmark_viewer` (mesh viewer).
+   This produces `build/face_reconstruction`.
 3. Set up the Python side (MediaPipe landmark detection):
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
    python -m pip install -r requirements.txt
    ```
+4. Download Google's MediaPipe multiclass segmentation model (the model file
+   is ignored by Git):
+   ```bash
+   curl -L https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite \
+     -o models/selfie_multiclass_256x256.tflite
+   ```
 
 ## Run
 
 ```bash
 source .venv/bin/activate
-python reconstruct.py inputs/face.jpg --render
+python reconstruct.py inputs/face.jpg
 ```
 
 This detects 40 semantic landmark constraints, fits
 camera/identity/expression, removes self-occluded semantic constraints with
 the rasterizer's Z-buffer, refines identity against a dense face silhouette,
-fits appearance (albedo + illumination), fits per-vertex RGB color, exports
-the mesh, and (with `--render`) renders the four basic viewer modes. Output
-goes to one self-contained directory:
+fits appearance (albedo + illumination), fits per-vertex RGB color, and
+exports the mesh and diagnostics. Output goes to one self-contained directory:
 
 ```text
 reconstructions/face/
@@ -45,19 +49,37 @@ reconstructions/face/
 ├── face.ply                  colored mesh
 ├── fitting.txt               semantic solver report and RMSE
 ├── silhouette_fitting.txt    silhouette Chamfer/IoU report
+├── bfm_surface_overlay.png    translucent fitted BFM surface on the photo
 ├── rendered_final_overlay.png the result, composited on the input photo
-├── run.json
-└── renders/                   albedo.png, depth.png, normal.png, checkerboard.png
+└── run.json
 ```
 
 Add `--diagnostics` to also keep landmark/visibility/residual debug images.
-Pass `--silhouette-mask mask.png` to use an external face-segmentation mask;
-otherwise the detector rasterizes MediaPipe's ordered face oval into a dense
-binary mask. The external mask should have the photograph's aspect ratio.
-The oval points are not used as sparse BFM correspondences.
+By default, MediaPipe's six-class image segmenter extracts the face-skin class
+and saves a filled, largest-component mask. This replaces the old face-oval
+polygon, which does not follow the nose and lips in profile views. Pass
+`--silhouette-mask mask.png` to use a manually corrected or external mask;
+the mask must have the photograph's dimensions.
 Self-occlusion filtering is enabled by default. Pass
 `--no-landmark-visibility-filter` only for comparison/debugging, or adjust the
 inverse-depth comparison with `--landmark-depth-tolerance` (default `1e-4`).
+At strong yaw, landmarks whose semantic name belongs to the far side are also
+removed (`--pose-yaw-threshold`, default `0.55` radians). Gross detections
+outside the face-skin mask are rejected. Boundary landmarks such as the nose
+tip, chin and mouth corners are instead snapped to the nearest mask boundary
+when the correction is small, and receive a stronger fitting weight.
+
+For difficult cases, pass `--landmark-overrides corrections.csv`. The CSV may
+correct or disable individual MediaPipe points:
+
+```csv
+index,x_norm,y_norm,enabled
+4,0.918,0.442,true
+291,,,false
+```
+
+Coordinates are normalized to `[0,1]`. Disabled rows are removed before BFM
+fitting, and all applied changes are recorded in `landmark_overrides.json`.
 Run `python reconstruct.py --help` or `./build/face_reconstruction --help` for
 the full list of tuning flags (regularization weights, PCA component counts,
 pixel strides, etc.).
@@ -68,12 +90,7 @@ Other useful commands:
 # Inspect the BFM model itself
 ./build/face_reconstruction --check-bfm
 
-# View/render any OBJ or colored ASCII PLY mesh standalone
-./build/landmark_viewer data/model.obj            # interactive (keys 1-4, S to save)
-./build/landmark_viewer data/model.obj --render-all /tmp/out
-
-# Batch-run several photos for a quick regression comparison
-./.venv/bin/python scripts/evaluate_perspective.py inputs/1.jpg inputs/2.png
+# Open face.off or face.ply in MeshLab to inspect the reconstructed mesh
 ```
 
 ## Pipeline Steps
@@ -85,9 +102,9 @@ runs things), not by directory:
 0. Python entry point
    reconstruct.py
    One command that drives the whole pipeline: it calls step 1 to detect
-   landmarks, invokes the compiled `face_reconstruction` executable to run
-   steps 2-9, and (if --render is passed) invokes `landmark_viewer` for step
-   10. Collects every output file into one reconstructions/<name>/ folder.
+   landmarks and invokes the compiled `face_reconstruction` executable to run
+   steps 2-9. It collects every output file into one
+   reconstructions/<name>/ folder.
         ↓
 1. Landmark detection
    scripts/detect_landmarks.py
@@ -95,9 +112,12 @@ runs things), not by directory:
    with 478 rows: each detected facial point's index, pixel coordinates, and
    normalized image coordinates. This is the only step that actually looks at
    the photo to find facial features -- every later step works only with
-   these point coordinates and the photo's raw pixel colors. It also creates
-   a binary face-oval mask for step 4 unless an external segmentation mask was
-   supplied.
+   these point coordinates and the photo's raw pixel colors.
+
+   scripts/segment_face.py
+   Runs MediaPipe multiclass image segmentation and extracts class 3
+   (face skin). The largest component is closed and filled to create the
+   silhouette used by step 4. An external/manual mask can override it.
         ↓
 2. Load the BFM model + landmark data
    face_recon/bfm_model.h / .cc
@@ -120,11 +140,13 @@ runs things), not by directory:
    and 100 expression coefficients -- using Ceres least-squares. It adjusts
    every unknown so that projecting the current 3D face through the current
    camera lands as close as possible to the detected 2D points, in two
-   stages. The camera-only stage first supplies a coarse pose. The mean BFM is
-   then rasterized from that pose and each semantic vertex is compared with
-   the inverse-depth Z-buffer in a 3x3 pixel neighborhood. Landmarks behind a
-   nearer facial surface (for example, the far eye in a profile image) are
-   removed before the joint camera/identity/expression solve and its automatic
+   stages. It first checks observations against the face-skin mask: gross detections are
+   removed, while nearby boundary landmarks can be snapped to the observed
+   mask. The camera-only stage then supplies a coarse pose. At strong yaw,
+   semantic landmarks on the far side are removed. Finally, the mean BFM is
+   rasterized from that pose and each remaining semantic vertex is compared
+   with the inverse-depth Z-buffer in a 3x3 pixel neighborhood. Landmarks
+   behind a nearer facial surface are removed before the joint solve and its
    residual-based outlier rejection. If the mesh has no topology or fewer
    than six landmarks remain visible, the filter safely falls back to the
    original constraints. Output: this person's personalized 3D mesh vertices
@@ -191,27 +213,19 @@ runs things), not by directory:
    face_recon/image_fitting.h / .cc
    Renders the intermediate results from earlier steps as PNGs purely for
    inspection -- none of this feeds back into the mesh or its colors:
-   overlay.png (detected vs. projected landmarks, to check step 3's
-   accuracy), raster_depth.png (visualized depth buffer, to check step 5),
+   bfm_surface_overlay.png (a translucent normal-shaded BFM surface generated
+   by the CPU rasterizer), overlay.png (detected vs. projected landmarks,
+   to check step 3's accuracy), raster_depth.png (visualized depth buffer, to check step 5),
    visibility.png (visible-face mask), and silhouette target/initial/refined
    masks plus a colored boundary overlay. Only generated when --diagnostics
    is passed.
-        ↓
-10. (Optional, only runs with --render) Four rendering modes
-   include/face_reconstruction/viewer.hpp + src/viewer.cpp
-   obj_loader.* / ply_loader.* / mesh.*   (mesh file parsing)
-   app.* + main.cpp                       (landmark_viewer's CLI)
-   A fully separate executable, `landmark_viewer`, that re-reads the
-   step-8 face.ply through a real OpenGL pipeline and renders it as
-   albedo/depth/normal/checkerboard. It has no data dependency on steps 1-9
-   -- it can render any OBJ/PLY file, not just ones this project produced.
 ```
 
 Directories not part of the runtime pipeline above:
 
 ```text
-tests/            All 5 regression tests referenced above; run with `ctest --test-dir build`
-data/             BFM model file (you provide this), correspondence CSVs, sample mesh
+tests/            Regression tests; run with `ctest --test-dir build`
+data/             BFM model file, active correspondence CSV, and test datasets
 inputs/           Source photographs only
 reconstructions/  One output directory per input photo (see `Run` above)
 notes/            Running work-log notes

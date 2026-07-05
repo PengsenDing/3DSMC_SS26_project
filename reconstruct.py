@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import shutil
 import subprocess
@@ -12,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.detect_landmarks import run_detection
+from scripts.segment_face import DEFAULT_MODEL as DEFAULT_SEGMENTATION_MODEL
+from scripts.segment_face import MODEL_URL as SEGMENTATION_MODEL_URL
+from scripts.segment_face import segment_face_skin
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -53,11 +57,6 @@ def parse_args() -> argparse.Namespace:
         help="CMake build directory",
     )
     parser.add_argument(
-        "--render",
-        action="store_true",
-        help="Also export albedo, depth, normal, and checkerboard PNGs",
-    )
-    parser.add_argument(
         "--diagnostics",
         action="store_true",
         help="Save detailed landmark, rasterization, and fitting diagnostics",
@@ -80,6 +79,16 @@ def parse_args() -> argparse.Namespace:
         help="Weight keeping perspective focal length near a portrait prior",
     )
     parser.add_argument(
+        "--shape-regularization",
+        type=float,
+        help="Weight of the identity PCA prior (C++ default 0.1)",
+    )
+    parser.add_argument(
+        "--silhouette-weight",
+        type=float,
+        help="Weight of bidirectional silhouette correspondences (C++ default 10)",
+    )
+    parser.add_argument(
         "--no-landmark-visibility-filter",
         action="store_true",
         help="Keep self-occluded semantic landmarks in the joint BFM fit",
@@ -97,6 +106,37 @@ def parse_args() -> argparse.Namespace:
             "Optional external binary face mask; defaults to a dense mask "
             "rasterized from MediaPipe's face oval"
         ),
+    )
+    parser.add_argument(
+        "--segmentation-model",
+        type=Path,
+        default=DEFAULT_SEGMENTATION_MODEL,
+        help="MediaPipe multiclass model used to generate a face-skin mask",
+    )
+    parser.add_argument(
+        "--landmark-overrides",
+        type=Path,
+        help=(
+            "Optional CSV with index,x_norm,y_norm,enabled columns for "
+            "manual landmark correction or disabling"
+        ),
+    )
+    parser.add_argument(
+        "--no-pose-landmark-filter",
+        action="store_true",
+        help="Disable yaw-based rejection of far-side semantic landmarks",
+    )
+    parser.add_argument(
+        "--pose-yaw-threshold",
+        type=float,
+        default=0.55,
+        help="Absolute yaw in radians at which far-side landmarks are rejected",
+    )
+    parser.add_argument(
+        "--landmark-mask-tolerance",
+        type=float,
+        default=0.015,
+        help="Maximum distance outside the face mask, normalized by image size",
     )
     parser.add_argument(
         "--no-silhouette-fitting",
@@ -154,6 +194,74 @@ def run_command(command: list[str]) -> None:
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
 
+def apply_landmark_overrides(
+    landmarks_path: Path, overrides_path: Path, report_path: Path
+) -> None:
+    """Apply normalized manual corrections and remove explicitly disabled rows."""
+    with landmarks_path.open(newline="", encoding="utf-8") as input_file:
+        rows = list(csv.DictReader(input_file))
+    if not rows:
+        raise ValueError("Cannot apply overrides to an empty landmark CSV")
+    fieldnames = list(rows[0])
+
+    with overrides_path.open(newline="", encoding="utf-8") as input_file:
+        override_rows = list(csv.DictReader(input_file))
+    overrides: dict[int, dict[str, str]] = {}
+    for row in override_rows:
+        raw_index = row.get("index") or row.get("mediapipe_index")
+        if raw_index is None or raw_index.strip() == "":
+            raise ValueError("Every landmark override requires an index")
+        overrides[int(raw_index)] = row
+
+    applied: list[dict[str, object]] = []
+    output_rows: list[dict[str, str]] = []
+    for row in rows:
+        index = int(row["index"])
+        override = overrides.get(index)
+        if override is None:
+            output_rows.append(row)
+            continue
+        enabled = override.get("enabled", "true").strip().lower()
+        if enabled in {"false", "0", "no"}:
+            applied.append({"index": index, "action": "disabled"})
+            continue
+        x_value = override.get("x_norm", "").strip()
+        y_value = override.get("y_norm", "").strip()
+        if bool(x_value) != bool(y_value):
+            raise ValueError(
+                f"Landmark override {index} must provide both x_norm and y_norm"
+            )
+        if x_value:
+            x_norm = float(x_value)
+            y_norm = float(y_value)
+            if not (0.0 <= x_norm <= 1.0 and 0.0 <= y_norm <= 1.0):
+                raise ValueError(f"Landmark override {index} is outside [0,1]")
+            width = float(row["u"]) / max(float(row["x_norm"]), 1.0e-8)
+            height = float(row["v"]) / max(float(row["y_norm"]), 1.0e-8)
+            row["x_norm"] = str(x_norm)
+            row["y_norm"] = str(y_norm)
+            row["u"] = str(x_norm * width)
+            row["v"] = str(y_norm * height)
+            applied.append(
+                {
+                    "index": index,
+                    "action": "corrected",
+                    "x_norm": x_norm,
+                    "y_norm": y_norm,
+                }
+            )
+        output_rows.append(row)
+
+    missing = sorted(set(overrides) - {int(row["index"]) for row in rows})
+    if missing:
+        raise ValueError(f"Overrides reference missing landmark indices: {missing}")
+    with landmarks_path.open("w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(output_rows)
+    report_path.write_text(json.dumps(applied, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     args = parse_args()
     image = require_file(args.image, "Input image")
@@ -172,24 +280,40 @@ def main() -> int:
     run_directory.mkdir(parents=True, exist_ok=True)
     landmarks_csv = run_directory / "landmarks.csv"
     observed_silhouette = run_directory / "observed_silhouette.png"
+    occluder_mask = run_directory / "occluder_mask.png"
+    segmentation_preview = run_directory / "face_segmentation.png"
+    overrides_report = run_directory / "landmark_overrides.json"
     landmarks_preview = run_directory / "landmarks.png" if args.diagnostics else None
 
-    total_steps = 3 if args.render else 2
+    total_steps = 2
     print(f"[1/{total_steps}] Detecting landmarks in {image.name}")
     landmark_count = run_detection(
         image_path=image,
         csv_path=landmarks_csv,
         debug_path=landmarks_preview,
         correspondence_path=correspondences,
-        silhouette_mask_path=(
-            observed_silhouette
-            if not args.no_silhouette_fitting and args.silhouette_mask is None
-            else None
-        ),
+        silhouette_mask_path=None,
     )
+    if args.landmark_overrides is not None:
+        overrides = require_file(args.landmark_overrides, "Landmark override CSV")
+        apply_landmark_overrides(landmarks_csv, overrides, overrides_report)
     if not args.no_silhouette_fitting and args.silhouette_mask is not None:
         supplied_silhouette = require_file(args.silhouette_mask, "Silhouette mask")
         shutil.copyfile(supplied_silhouette, observed_silhouette)
+    elif not args.no_silhouette_fitting:
+        segmentation_model = args.segmentation_model.expanduser().resolve()
+        if not segmentation_model.is_file():
+            raise FileNotFoundError(
+                f"Face segmentation model does not exist: {segmentation_model}\n"
+                f"Download it from:\n{SEGMENTATION_MODEL_URL}"
+            )
+        segment_face_skin(
+            image,
+            segmentation_model,
+            observed_silhouette,
+            segmentation_preview if args.diagnostics else None,
+            occluder_mask,
+        )
     print(f"Detected {landmark_count} landmarks")
 
     print(f"[2/{total_steps}] Fitting the Basel Face Model")
@@ -213,6 +337,10 @@ def main() -> int:
         str(args.focal_regularization),
         "--landmark-depth-tolerance",
         str(args.landmark_depth_tolerance),
+        "--pose-yaw-threshold",
+        str(args.pose_yaw_threshold),
+        "--landmark-mask-tolerance",
+        str(args.landmark_mask_tolerance),
         "--silhouette-resolution",
         str(args.silhouette_resolution),
         "--silhouette-iterations",
@@ -226,37 +354,33 @@ def main() -> int:
         "--texture-smoothness",
         str(args.texture_smoothness),
     ]
+    if args.shape_regularization is not None:
+        fitting_command.extend(
+            ["--shape-regularization", str(args.shape_regularization)]
+        )
+    if args.silhouette_weight is not None:
+        fitting_command.extend(["--silhouette-weight", str(args.silhouette_weight)])
     if args.no_landmark_visibility_filter:
         fitting_command.append("--no-landmark-visibility-filter")
+    if args.no_pose_landmark_filter:
+        fitting_command.append("--no-pose-landmark-filter")
     if args.no_silhouette_fitting:
         fitting_command.append("--no-silhouette-fitting")
     else:
         fitting_command.extend(["--silhouette-mask", str(observed_silhouette)])
+    if occluder_mask.is_file():
+        fitting_command.extend(["--occluder-mask", str(occluder_mask)])
     if args.diagnostics:
         fitting_command.append("--diagnostics")
     if args.verbose_optimization:
         fitting_command.append("--verbose-optimization")
     run_command(fitting_command)
 
-    if args.render:
-        print("[3/3] Rendering diagnostic image channels")
-        viewer = require_file(
-            args.build_dir / "landmark_viewer",
-            "Renderer executable; run `cmake --build build --parallel` first",
-        )
-        run_command(
-            [
-                str(viewer),
-                str(run_directory / "face.ply"),
-                "--render-all",
-                str(run_directory / "renders"),
-            ]
-        )
-
     artifacts = {
         "mesh_off": "face.off",
         "mesh_ply": "face.ply",
         "fitting_report": "fitting.txt",
+        "bfm_surface_overlay": "bfm_surface_overlay.png",
         "rendered_final": "rendered_final.png",
         "rendered_final_overlay": "rendered_final_overlay.png",
     }
@@ -288,6 +412,11 @@ def main() -> int:
                 "texture_residual": "texture_residual.png",
             }
         )
+        if args.silhouette_mask is None and not args.no_silhouette_fitting:
+            artifacts["face_segmentation"] = "face_segmentation.png"
+            artifacts["occluder_mask"] = "occluder_mask.png"
+        if args.landmark_overrides is not None:
+            artifacts["landmark_overrides"] = "landmark_overrides.json"
         if not args.no_silhouette_fitting:
             artifacts.update(
                 {
@@ -298,13 +427,13 @@ def main() -> int:
                     "silhouette_overlay": "silhouette_overlay.png",
                 }
             )
-    if args.render:
-        artifacts["renders"] = "renders/"
-
     if not args.diagnostics:
         diagnostics = [
             "landmarks.csv",
             "landmarks.png",
+            "face_segmentation.png",
+            "occluder_mask.png",
+            "landmark_overrides.json",
             "face_aligned.ply",
             "face_albedo.ply",
             "reprojections.csv",
@@ -334,9 +463,6 @@ def main() -> int:
             path = run_directory / filename
             if path.is_file():
                 path.unlink()
-    if not args.render:
-        shutil.rmtree(run_directory / "renders", ignore_errors=True)
-
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "input_image": str(image),

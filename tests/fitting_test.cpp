@@ -31,6 +31,15 @@ Eigen::Vector2d Project(const Eigen::Vector3d& point,
 }  // namespace
 
 int main() {
+  if (!face_recon::IsFarSideLandmark("right.eye.corner_outer", 0.8, 0.55) ||
+      face_recon::IsFarSideLandmark("left.eye.corner_outer", 0.8, 0.55) ||
+      !face_recon::IsFarSideLandmark("left.lips.corner", -0.8, 0.55) ||
+      face_recon::IsFarSideLandmark("center.nose.tip", 0.8, 0.55) ||
+      face_recon::IsFarSideLandmark("right.eye.corner_outer", 0.3, 0.55)) {
+    std::cerr << "Pose-aware landmark classification failed\n";
+    return 1;
+  }
+
   constexpr int kVertexCount = 8;
   face_recon::BfmModel model;
 
@@ -121,6 +130,9 @@ int main() {
       result.contour_landmark_count != 0 ||
       result.visibility_filter_applied ||
       result.occluded_landmark_count != 0 ||
+      result.pose_rejected_landmark_count != 0 ||
+      result.mask_rejected_landmark_count != 0 ||
+      result.mask_corrected_landmark_count != 0 ||
       result.reprojections.size() != correspondences.size()) {
     std::cerr << result.solver_summary << "\n";
     return 1;

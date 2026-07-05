@@ -15,6 +15,9 @@ struct TextureFittingOptions {
   bool save_diagnostics = false;
   int pixel_stride = 1;
   int mask_erosion = 1;
+  // Binary mask of external occluders (hair, hands, clothes, accessories);
+  // pixels under it never contribute color observations. Empty disables it.
+  std::string occluder_mask_path;
   int solver_iterations = 300;
   double prior_weight = 0.02;
   double smoothness_weight = 0.01;

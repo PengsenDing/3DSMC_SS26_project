@@ -12,8 +12,17 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace face_recon {
+namespace {
+
+int TriangleIndex(const Eigen::MatrixXi& triangles, int triangle, int corner) {
+  return triangles.cols() == 3 ? triangles(triangle, corner)
+                               : triangles(corner, triangle);
+}
+
+}  // namespace
 
 Eigen::Vector2i ReadImageSize(const std::string& image_path) {
   const cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
@@ -88,6 +97,82 @@ bool SaveVisibilityImage(const RasterizationResult& rasterization,
     return false;
   }
   std::cout << "[SUCCESS] Saved visibility image: " << output_path << "\n";
+  return true;
+}
+
+bool SaveBfmSurfaceOverlay(const std::string& image_path,
+                           const Eigen::MatrixXi& triangles,
+                           const Eigen::VectorXd& camera_normals,
+                           const RasterizationResult& rasterization,
+                           const std::string& output_path,
+                           double alpha) {
+  cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
+  if (image.empty()) {
+    std::cerr << "[ERROR] Could not read surface-overlay image: "
+              << image_path << "\n";
+    return false;
+  }
+  if (image.cols != rasterization.width ||
+      image.rows != rasterization.height ||
+      camera_normals.size() !=
+          3 * static_cast<int>(rasterization.projected_vertices.size()) ||
+      alpha < 0.0 || alpha > 1.0) {
+    std::cerr << "[ERROR] Invalid BFM surface-overlay inputs.\n";
+    return false;
+  }
+
+  cv::Mat overlay = image.clone();
+  cv::Mat mask(image.rows, image.cols, CV_8UC1, cv::Scalar(0));
+  const Eigen::Vector3d base_bgr(235.0, 175.0, 55.0);
+  for (int y = 0; y < rasterization.height; ++y) {
+    for (int x = 0; x < rasterization.width; ++x) {
+      const RasterPixel& pixel = rasterization.at(x, y);
+      if (!pixel.visible()) {
+        continue;
+      }
+      const int i0 = TriangleIndex(triangles, pixel.triangle_id, 0);
+      const int i1 = TriangleIndex(triangles, pixel.triangle_id, 1);
+      const int i2 = TriangleIndex(triangles, pixel.triangle_id, 2);
+      Eigen::Vector3d normal =
+          static_cast<double>(pixel.barycentric[0]) *
+              camera_normals.segment<3>(3 * i0) +
+          static_cast<double>(pixel.barycentric[1]) *
+              camera_normals.segment<3>(3 * i1) +
+          static_cast<double>(pixel.barycentric[2]) *
+              camera_normals.segment<3>(3 * i2);
+      if (normal.squaredNorm() > 1.0e-12) {
+        normal.normalize();
+      }
+      const double shade = 0.45 + 0.55 * std::abs(normal.z());
+      const Eigen::Vector3d surface = shade * base_bgr;
+      const cv::Vec3b original = image.at<cv::Vec3b>(y, x);
+      cv::Vec3b blended;
+      for (int channel = 0; channel < 3; ++channel) {
+        blended[channel] = static_cast<unsigned char>(std::lround(
+            std::clamp((1.0 - alpha) * original[channel] +
+                           alpha * surface[channel],
+                       0.0, 255.0)));
+      }
+      overlay.at<cv::Vec3b>(y, x) = blended;
+      mask.at<unsigned char>(y, x) = 255;
+    }
+  }
+
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+  cv::drawContours(overlay, contours, -1, cv::Scalar(255, 210, 70), 1,
+                   cv::LINE_AA);
+
+  if (!std::filesystem::path(output_path).parent_path().empty()) {
+    std::filesystem::create_directories(
+        std::filesystem::path(output_path).parent_path());
+  }
+  if (!cv::imwrite(output_path, overlay)) {
+    std::cerr << "[ERROR] Could not save BFM surface overlay: "
+              << output_path << "\n";
+    return false;
+  }
+  std::cout << "[SUCCESS] Saved BFM surface overlay: " << output_path << "\n";
   return true;
 }
 

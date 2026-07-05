@@ -69,6 +69,48 @@ cv::Mat ResizeMask(const cv::Mat& mask, int maximum_dimension) {
   return resized;
 }
 
+// Loads the external-occluder mask (hair, hands, clothes, accessories),
+// resized to the silhouette working resolution and dilated a little so
+// imprecise segmentation boundaries still count as occluded. Returns an
+// empty matrix when no occluder mask was supplied.
+cv::Mat LoadOccluderMask(const std::string& path, const cv::Size& size) {
+  if (path.empty()) {
+    return {};
+  }
+  cv::Mat occluder = cv::imread(path, cv::IMREAD_GRAYSCALE);
+  if (occluder.empty()) {
+    throw std::runtime_error("Could not read occluder mask: " + path);
+  }
+  if (occluder.size() != size) {
+    cv::resize(occluder, occluder, size, 0.0, 0.0, cv::INTER_NEAREST);
+  }
+  cv::threshold(occluder, occluder, 127, 255, cv::THRESH_BINARY);
+  const int radius = std::max(
+      2, static_cast<int>(std::lround(0.02 * std::max(size.width, size.height))));
+  cv::dilate(occluder, occluder,
+             cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                       cv::Size(2 * radius + 1, 2 * radius + 1)));
+  return occluder;
+}
+
+// Boundary pixels inside the occluder region are occlusion boundaries
+// (face-vs-hand, face-vs-hair), not the face contour, and must not be
+// matched or measured.
+std::vector<cv::Point> RemoveOccludedContourPoints(
+    const std::vector<cv::Point>& contour, const cv::Mat& occluder) {
+  if (occluder.empty()) {
+    return contour;
+  }
+  std::vector<cv::Point> visible;
+  visible.reserve(contour.size());
+  for (const cv::Point& point : contour) {
+    if (occluder.at<unsigned char>(point) == 0) {
+      visible.push_back(point);
+    }
+  }
+  return visible;
+}
+
 cv::Mat RasterMask(const RasterizationResult& rasterization) {
   cv::Mat mask(rasterization.height, rasterization.width, CV_8UC1, cv::Scalar(0));
   for (int y = 0; y < rasterization.height; ++y) {
@@ -339,17 +381,30 @@ double ChamferDistance(const std::vector<cv::Point>& first, const std::vector<cv
 
 SilhouetteMetrics EvaluateMetrics(const BfmModel& model, const FittingResult& initial_fitting,
                                   const Eigen::VectorXd& vertices, const cv::Mat& target_mask,
+                                  const cv::Mat& occluder,
                                   cv::Mat* rendered_mask_out = nullptr) {
   const RasterizationResult rasterization = RasterizeMesh(
       vertices, model.triangles(), initial_fitting.camera, target_mask.cols, target_mask.rows);
   cv::Mat rendered_mask = RasterMask(rasterization);
-  const std::vector<cv::Point> target_contour = LargestContour(target_mask);
-  const std::vector<cv::Point> rendered_contour = LargestContour(rendered_mask);
+  const std::vector<cv::Point> target_contour =
+      RemoveOccludedContourPoints(LargestContour(target_mask), occluder);
+  const std::vector<cv::Point> rendered_contour =
+      RemoveOccludedContourPoints(LargestContour(rendered_mask), occluder);
   SilhouetteMetrics metrics;
   metrics.semantic_rmse = SemanticRmse(initial_fitting, vertices);
   metrics.silhouette_chamfer = ChamferDistance(target_contour, rendered_contour,
                                                std::max(target_mask.cols, target_mask.rows));
-  metrics.silhouette_iou = SilhouetteIou(rendered_mask, target_mask);
+  if (occluder.empty()) {
+    metrics.silhouette_iou = SilhouetteIou(rendered_mask, target_mask);
+  } else {
+    // The mask shapes disagree behind occluders by construction; measure
+    // the overlap only where the face is actually observable.
+    cv::Mat visible_rendered = rendered_mask.clone();
+    cv::Mat visible_target = target_mask.clone();
+    visible_rendered.setTo(0, occluder);
+    visible_target.setTo(0, occluder);
+    metrics.silhouette_iou = SilhouetteIou(visible_rendered, visible_target);
+  }
   if (rendered_mask_out != nullptr) {
     *rendered_mask_out = std::move(rendered_mask);
   }
@@ -386,27 +441,37 @@ SilhouetteFittingResult RefineGeometryFromSilhouette(const std::string& silhouet
   }
   const cv::Mat full_target = LoadBinaryMask(silhouette_mask_path);
   const cv::Mat target = ResizeMask(full_target, options.resolution);
-  const std::vector<cv::Point> target_contour = LargestContour(target);
-  if (target_contour.size() < 20) {
+  const cv::Mat occluder = LoadOccluderMask(options.occluder_mask_path, target.size());
+  const std::vector<cv::Point> full_target_contour = LargestContour(target);
+  if (full_target_contour.size() < 20) {
     throw std::runtime_error("Silhouette mask has no usable outer contour");
   }
+  const std::vector<cv::Point> target_contour =
+      RemoveOccludedContourPoints(full_target_contour, occluder);
 
   SilhouetteFittingResult result;
   result.shape_coefficients = initial_fitting.shape_coefficients;
   result.vertices = initial_fitting.vertices;
   cv::Mat initial_mask;
-  result.initial = EvaluateMetrics(model, initial_fitting, result.vertices, target, &initial_mask);
+  result.initial = EvaluateMetrics(model, initial_fitting, result.vertices, target, occluder,
+                                   &initial_mask);
   SilhouetteMetrics current_metrics = result.initial;
   const double maximum_semantic_rmse =
       std::max(result.initial.semantic_rmse * options.semantic_degradation_limit,
                result.initial.semantic_rmse + 0.002);
 
   std::ostringstream summaries;
-  for (int outer = 0; outer < options.outer_iterations; ++outer) {
+  if (target_contour.size() < 20) {
+    summaries << "Occluders cover almost the entire face boundary ("
+              << target_contour.size()
+              << " visible contour points); keeping the semantic-only geometry\n";
+  }
+  for (int outer = 0; target_contour.size() >= 20 && outer < options.outer_iterations; ++outer) {
     const RasterizationResult rasterization = RasterizeMesh(
         result.vertices, model.triangles(), initial_fitting.camera, target.cols, target.rows);
     const cv::Mat rendered_mask = RasterMask(rasterization);
-    const std::vector<cv::Point> rendered_contour = LargestContour(rendered_mask);
+    const std::vector<cv::Point> rendered_contour =
+        RemoveOccludedContourPoints(LargestContour(rendered_mask), occluder);
     const std::vector<RenderedContourSample> rendered_samples =
         BuildRenderedSamples(model, rasterization, rendered_contour, result.vertices,
                              result.shape_coefficients, options.sample_stride);
@@ -429,7 +494,8 @@ SilhouetteFittingResult RefineGeometryFromSilhouette(const std::string& silhouet
       const ShapeSample sample = VertexSample(model, result.vertices, result.shape_coefficients,
                                               reprojection.bfm_vertex_id);
       AddProjectionResidual(&problem, sample, reprojection.observed, initial_fitting.camera,
-                            options.semantic_weight, options.huber_delta,
+                            options.semantic_weight * reprojection.weight_multiplier,
+                            options.huber_delta,
                             result.shape_coefficients.data(), shape_count);
     }
     for (const SilhouetteMatch& match : silhouette_matches) {
@@ -460,7 +526,7 @@ SilhouetteFittingResult RefineGeometryFromSilhouette(const std::string& silhouet
     const Eigen::VectorXd candidate_vertices =
         GenerateVertices(model, result.shape_coefficients, initial_fitting.expression_coefficients);
     const SilhouetteMetrics candidate_metrics =
-        EvaluateMetrics(model, initial_fitting, candidate_vertices, target);
+        EvaluateMetrics(model, initial_fitting, candidate_vertices, target, occluder);
     const bool safe =
         summary.IsSolutionUsable() && candidate_metrics.semantic_rmse <= maximum_semantic_rmse &&
         candidate_metrics.silhouette_chamfer + 1.0e-6 < current_metrics.silhouette_chamfer;
@@ -480,7 +546,8 @@ SilhouetteFittingResult RefineGeometryFromSilhouette(const std::string& silhouet
   }
 
   cv::Mat final_mask;
-  result.final = EvaluateMetrics(model, initial_fitting, result.vertices, target, &final_mask);
+  result.final = EvaluateMetrics(model, initial_fitting, result.vertices, target, occluder,
+                                 &final_mask);
   result.usable = result.completed_outer_iterations > 0 &&
                   result.final.semantic_rmse <= maximum_semantic_rmse &&
                   result.final.silhouette_chamfer <= result.initial.silhouette_chamfer;

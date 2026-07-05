@@ -1,8 +1,12 @@
+#include "face_recon/image_fitting.h"
 #include "face_recon/rasterizer.h"
+
+#include <opencv2/imgcodecs.hpp>
 
 #include <Eigen/Core>
 
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 
 int main() {
@@ -63,6 +67,38 @@ int main() {
   if (visible_vertices[0] || visible_vertices[1] || visible_vertices[2] ||
       !visible_vertices[3] || !visible_vertices[4] || !visible_vertices[5]) {
     std::cerr << "Vertex visibility test failed\n";
+    return 1;
+  }
+
+  const std::filesystem::path input_path =
+      std::filesystem::temp_directory_path() /
+      "face_reconstruction_surface_overlay_input.png";
+  const std::filesystem::path output_path =
+      std::filesystem::temp_directory_path() /
+      "face_reconstruction_surface_overlay_output.png";
+  const cv::Mat white_image(64, 64, CV_8UC3, cv::Scalar(255, 255, 255));
+  if (!cv::imwrite(input_path.string(), white_image)) {
+    std::cerr << "Could not create surface-overlay test image\n";
+    return 1;
+  }
+  Eigen::VectorXd normals(18);
+  for (int vertex = 0; vertex < 6; ++vertex) {
+    normals.segment<3>(3 * vertex) = Eigen::Vector3d::UnitZ();
+  }
+  if (!face_recon::SaveBfmSurfaceOverlay(
+          input_path.string(), triangles, normals, rasterization,
+          output_path.string())) {
+    std::cerr << "Surface-overlay export failed\n";
+    return 1;
+  }
+  const cv::Mat surface_overlay =
+      cv::imread(output_path.string(), cv::IMREAD_COLOR);
+  std::filesystem::remove(input_path);
+  std::filesystem::remove(output_path);
+  if (surface_overlay.empty() ||
+      surface_overlay.at<cv::Vec3b>(32, 32) == cv::Vec3b(255, 255, 255) ||
+      surface_overlay.at<cv::Vec3b>(0, 0) != cv::Vec3b(255, 255, 255)) {
+    std::cerr << "Surface-overlay pixels are incorrect\n";
     return 1;
   }
 

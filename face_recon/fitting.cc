@@ -5,6 +5,9 @@
 #include <ceres/dynamic_autodiff_cost_function.h>
 #include <ceres/rotation.h>
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <Eigen/Core>
 
 #include <algorithm>
@@ -506,7 +509,119 @@ std::vector<MatchedLandmark> FilterOccludedLandmarks(
   return visible_matches;
 }
 
+std::vector<MatchedLandmark> FilterLandmarksByFaceMask(
+    const std::vector<MatchedLandmark>& matches,
+    const std::string& mask_path,
+    double normalized_tolerance,
+    int* rejected_count,
+    int* corrected_count) {
+  *rejected_count = 0;
+  *corrected_count = 0;
+  if (mask_path.empty()) {
+    return matches;
+  }
+  cv::Mat mask = cv::imread(mask_path, cv::IMREAD_GRAYSCALE);
+  if (mask.empty()) {
+    throw std::runtime_error("Could not read landmark face mask: " + mask_path);
+  }
+  cv::threshold(mask, mask, 0, 255, cv::THRESH_BINARY);
+  cv::Mat outside;
+  cv::bitwise_not(mask, outside);
+  cv::Mat distance;
+  cv::distanceTransform(outside, distance, cv::DIST_L2, 3);
+  const double tolerance_pixels =
+      normalized_tolerance * std::max(mask.cols, mask.rows);
+  const double maximum_correction = 0.08 * std::max(mask.cols, mask.rows);
+  std::vector<cv::Point> face_pixels;
+  cv::findNonZero(mask, face_pixels);
+  const auto is_boundary_landmark = [](const std::string& name) {
+    return name == "center.nose.tip" || name == "center.chin.tip" ||
+           name.find("lips.corner") != std::string::npos ||
+           name.find("nose.wing.outer") != std::string::npos;
+  };
+
+  std::vector<MatchedLandmark> filtered;
+  filtered.reserve(matches.size());
+  for (const auto& match : matches) {
+    const int x = static_cast<int>(std::lround(match.target.x() * (mask.cols - 1)));
+    const int y = static_cast<int>(std::lround(match.target.y() * (mask.rows - 1)));
+    if (x < 0 || x >= mask.cols || y < 0 || y >= mask.rows) {
+      continue;
+    }
+    const double mask_distance = distance.at<float>(y, x);
+    if (mask_distance <= tolerance_pixels) {
+      filtered.push_back(match);
+      continue;
+    }
+    if (is_boundary_landmark(match.name) &&
+        mask_distance <= maximum_correction && !face_pixels.empty()) {
+      const auto nearest = std::min_element(
+          face_pixels.begin(), face_pixels.end(),
+          [x, y](const cv::Point& lhs, const cv::Point& rhs) {
+            const int lhs_dx = lhs.x - x;
+            const int lhs_dy = lhs.y - y;
+            const int rhs_dx = rhs.x - x;
+            const int rhs_dy = rhs.y - y;
+            return lhs_dx * lhs_dx + lhs_dy * lhs_dy <
+                   rhs_dx * rhs_dx + rhs_dy * rhs_dy;
+          });
+      MatchedLandmark corrected = match;
+      corrected.target = Eigen::Vector2d(
+          static_cast<double>(nearest->x) / std::max(mask.cols - 1, 1),
+          static_cast<double>(nearest->y) / std::max(mask.rows - 1, 1));
+      // A corrected boundary point carries direct silhouette evidence. Give
+      // it enough influence to survive the robust loss and competing sparse
+      // landmarks, while leaving ordinary detector observations unchanged.
+      corrected.weight *= 9.0;
+      filtered.push_back(std::move(corrected));
+      ++*corrected_count;
+    }
+  }
+  if (filtered.size() < 6) {
+    return matches;
+  }
+  *rejected_count = static_cast<int>(matches.size() - filtered.size());
+  return filtered;
+}
+
+double CameraYaw(const std::array<double, 7>& camera) {
+  double rotation_values[9];
+  ceres::AngleAxisToRotationMatrix(camera.data(), rotation_values);
+  const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::ColMajor>> rotation(
+      rotation_values);
+  return std::atan2(rotation(0, 2), rotation(2, 2));
+}
+
+std::vector<MatchedLandmark> FilterLandmarksByPose(
+    const std::vector<MatchedLandmark>& matches,
+    double yaw,
+    double yaw_threshold,
+    int* rejected_count) {
+  *rejected_count = 0;
+  std::vector<MatchedLandmark> filtered;
+  filtered.reserve(matches.size());
+  for (const auto& match : matches) {
+    if (!IsFarSideLandmark(match.name, yaw, yaw_threshold)) {
+      filtered.push_back(match);
+    }
+  }
+  if (filtered.size() < 6) {
+    return matches;
+  }
+  *rejected_count = static_cast<int>(matches.size() - filtered.size());
+  return filtered;
+}
+
 }  // namespace
+
+bool IsFarSideLandmark(const std::string& name, double yaw,
+                       double yaw_threshold) {
+  if (std::abs(yaw) < yaw_threshold) {
+    return false;
+  }
+  const std::string far_side = yaw > 0.0 ? "right." : "left.";
+  return name.rfind(far_side, 0) == 0;
+}
 
 Eigen::VectorXd GenerateVertices(const BfmModel& model,
                                  const Eigen::VectorXd& shape,
@@ -544,6 +659,12 @@ FittingResult FitBfmToLandmarks(
   std::vector<MatchedLandmark> semantic_matches =
       BuildMatchedLandmarks(model, landmarks, correspondences, num_shape,
                             num_expression, options.landmark_weight);
+  FittingResult result;
+  semantic_matches = FilterLandmarksByFaceMask(
+      semantic_matches, options.landmark_mask_path,
+      options.landmark_mask_tolerance,
+      &result.mask_rejected_landmark_count,
+      &result.mask_corrected_landmark_count);
   const double aspect_ratio = InferImageAspectRatio(landmarks);
   std::array<double, 7> camera =
       InitializeCamera(semantic_matches, aspect_ratio);
@@ -558,7 +679,6 @@ FittingResult FitBfmToLandmarks(
   Eigen::VectorXd shape = Eigen::VectorXd::Zero(num_shape);
   Eigen::VectorXd expression = Eigen::VectorXd::Zero(num_expression);
 
-  FittingResult result;
   result.initial_rmse =
       ComputeRmse(semantic_matches, camera, aspect_ratio, shape, expression);
 
@@ -574,6 +694,13 @@ FittingResult FitBfmToLandmarks(
   camera_problem.SetParameterBlockConstant(expression.data());
   const ceres::Solver::Summary camera_summary =
       SolveProblem(camera_problem, options.camera_iterations, options.verbose);
+
+  result.estimated_yaw = CameraYaw(camera);
+  if (options.filter_landmarks_by_pose) {
+    semantic_matches = FilterLandmarksByPose(
+        semantic_matches, result.estimated_yaw, options.pose_yaw_threshold,
+        &result.pose_rejected_landmark_count);
+  }
 
   if (options.filter_occluded_landmarks) {
     semantic_matches = FilterOccludedLandmarks(
@@ -622,7 +749,15 @@ FittingResult FitBfmToLandmarks(
   result.semantic_landmark_count = static_cast<int>(semantic_matches.size());
   result.contour_landmark_count = 0;
   result.solver_summary =
-      "Camera stage: " + camera_summary.BriefReport() +
+      "Mask plausibility: " +
+      std::to_string(result.mask_rejected_landmark_count) +
+      " landmark(s) outside the face mask removed, " +
+      std::to_string(result.mask_corrected_landmark_count) +
+      " boundary landmark(s) snapped to the mask" +
+      "\nCamera stage: " + camera_summary.BriefReport() +
+      "\nPose filtering: yaw=" + std::to_string(result.estimated_yaw) +
+      ", " + std::to_string(result.pose_rejected_landmark_count) +
+      " far-side landmark(s) removed" +
       "\nLandmark visibility: " +
       (result.visibility_filter_applied
            ? (std::to_string(result.occluded_landmark_count) +
@@ -641,6 +776,8 @@ FittingResult FitBfmToLandmarks(
     reprojection.observed = match.target;
     reprojection.projected =
         ProjectPoint(point, camera, aspect_ratio);
+    reprojection.weight_multiplier =
+        match.weight / std::max(options.landmark_weight, 1.0e-12);
     result.reprojections.push_back(std::move(reprojection));
   }
   return result;

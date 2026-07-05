@@ -12,6 +12,9 @@ namespace face_recon {
 struct SilhouetteFittingOptions {
   bool enabled = true;
   bool save_diagnostics = false;
+  // Binary mask of external occluders; target-boundary segments touching it
+  // are occlusion boundaries, not the face contour, and are not matched.
+  std::string occluder_mask_path;
   int resolution = 192;
   int outer_iterations = 3;
   int solver_iterations = 60;

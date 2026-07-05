@@ -89,7 +89,33 @@ Eigen::MatrixXd InterpolateBasis(const Eigen::MatrixXd& basis,
               basis.block(3 * i2, 0, 3, count));
 }
 
-cv::Mat BuildMask(const RasterizationResult& rasterization, int erosion) {
+// Removes externally occluded pixels (hair, hands, clothes, accessories)
+// from a sampling mask. The occluder mask is dilated a little because
+// segmentation boundaries are imprecise and mixed border pixels would
+// otherwise still leak occluder colors into the fit.
+void RemoveOccludedPixels(cv::Mat* mask, const std::string& occluder_mask_path) {
+  if (occluder_mask_path.empty()) {
+    return;
+  }
+  cv::Mat occluder = cv::imread(occluder_mask_path, cv::IMREAD_GRAYSCALE);
+  if (occluder.empty()) {
+    throw std::runtime_error("Could not read occluder mask: " +
+                             occluder_mask_path);
+  }
+  if (occluder.size() != mask->size()) {
+    cv::resize(occluder, occluder, mask->size(), 0.0, 0.0, cv::INTER_NEAREST);
+  }
+  cv::threshold(occluder, occluder, 127, 255, cv::THRESH_BINARY);
+  const int radius = std::max(
+      2, static_cast<int>(std::lround(0.01 * std::max(mask->cols, mask->rows))));
+  cv::dilate(occluder, occluder,
+             cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                       cv::Size(2 * radius + 1, 2 * radius + 1)));
+  mask->setTo(0, occluder);
+}
+
+cv::Mat BuildMask(const RasterizationResult& rasterization, int erosion,
+                  const std::string& occluder_mask_path) {
   cv::Mat mask(rasterization.height, rasterization.width, CV_8UC1,
                cv::Scalar(0));
   for (int y = 0; y < rasterization.height; ++y) {
@@ -99,6 +125,7 @@ cv::Mat BuildMask(const RasterizationResult& rasterization, int erosion) {
       }
     }
   }
+  RemoveOccludedPixels(&mask, occluder_mask_path);
   if (erosion > 0) {
     const int size = 2 * erosion + 1;
     cv::erode(mask, mask,
@@ -484,7 +511,8 @@ PhotometricResult FitPhotometricAppearance(
                                 : Eigen::Vector3d::UnitZ();
   }
 
-  const cv::Mat mask = BuildMask(rasterization, options.mask_erosion);
+  const cv::Mat mask = BuildMask(rasterization, options.mask_erosion,
+                                 options.occluder_mask_path);
   const std::vector<PixelSample> samples =
       BuildSamples(image, mask, model, rasterization, camera_normals,
                    num_albedo, options.pixel_stride);

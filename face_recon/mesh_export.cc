@@ -141,8 +141,15 @@ bool SaveFittingReport(const FittingResult& result, const std::string& filename)
          << (result.visibility_filter_applied ? "yes" : "no") << "\n";
   output << "occluded_semantic_landmarks: "
          << result.occluded_landmark_count << "\n";
+  output << "pose_rejected_semantic_landmarks: "
+         << result.pose_rejected_landmark_count << "\n";
+  output << "mask_rejected_semantic_landmarks: "
+         << result.mask_rejected_landmark_count << "\n";
+  output << "mask_corrected_semantic_landmarks: "
+         << result.mask_corrected_landmark_count << "\n";
   output << "rejected_semantic_landmarks: "
          << result.rejected_landmark_count << "\n";
+  output << "estimated_yaw_radians: " << result.estimated_yaw << "\n";
   output << "initial_rmse_normalized: " << result.initial_rmse << "\n";
   output << "final_rmse_normalized: " << result.final_rmse << "\n";
   output << "camera_angle_axis: "
@@ -178,7 +185,7 @@ bool SaveReprojectionsToCsv(const FittingResult& result, const std::string& file
   }
 
   output << "name,mediapipe_index,bfm_vertex_id,observed_x_norm,observed_y_norm,"
-            "projected_x_norm,projected_y_norm,error_norm\n";
+            "projected_x_norm,projected_y_norm,error_norm,weight_multiplier\n";
   output << std::setprecision(10);
   for (const auto& reprojection : result.reprojections) {
     const double error =
@@ -190,7 +197,8 @@ bool SaveReprojectionsToCsv(const FittingResult& result, const std::string& file
            << reprojection.observed.y() << ","
            << reprojection.projected.x() << ","
            << reprojection.projected.y() << ","
-           << error << "\n";
+           << error << ","
+           << reprojection.weight_multiplier << "\n";
   }
   return true;
 }

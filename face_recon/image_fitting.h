@@ -16,6 +16,12 @@ bool SaveRasterDepthImage(const RasterizationResult& rasterization,
                           const std::string& output_path);
 bool SaveVisibilityImage(const RasterizationResult& rasterization,
                          const std::string& output_path);
+bool SaveBfmSurfaceOverlay(const std::string& image_path,
+                           const Eigen::MatrixXi& triangles,
+                           const Eigen::VectorXd& camera_normals,
+                           const RasterizationResult& rasterization,
+                           const std::string& output_path,
+                           double alpha = 0.45);
 
 bool SaveReprojectionOverlay(const std::string& image_path,
                              const FittingResult& result,
