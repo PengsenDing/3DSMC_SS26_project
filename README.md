@@ -33,7 +33,8 @@ python reconstruct.py inputs/face.jpg --render
 ```
 
 This detects 40 semantic landmark constraints, fits
-camera/identity/expression, refines identity against a dense face silhouette,
+camera/identity/expression, removes self-occluded semantic constraints with
+the rasterizer's Z-buffer, refines identity against a dense face silhouette,
 fits appearance (albedo + illumination), fits per-vertex RGB color, exports
 the mesh, and (with `--render`) renders the four basic viewer modes. Output
 goes to one self-contained directory:
@@ -54,6 +55,9 @@ Pass `--silhouette-mask mask.png` to use an external face-segmentation mask;
 otherwise the detector rasterizes MediaPipe's ordered face oval into a dense
 binary mask. The external mask should have the photograph's aspect ratio.
 The oval points are not used as sparse BFM correspondences.
+Self-occlusion filtering is enabled by default. Pass
+`--no-landmark-visibility-filter` only for comparison/debugging, or adjust the
+inverse-depth comparison with `--landmark-depth-tolerance` (default `1e-4`).
 Run `python reconstruct.py --help` or `./build/face_reconstruction --help` for
 the full list of tuning flags (regularization weights, PCA component counts,
 pixel strides, etc.).
@@ -116,10 +120,18 @@ runs things), not by directory:
    and 100 expression coefficients -- using Ceres least-squares. It adjusts
    every unknown so that projecting the current 3D face through the current
    camera lands as close as possible to the detected 2D points, in two
-   stages (camera-only first, then everything jointly), with automatic
-   outlier rejection. Output: this person's personalized 3D mesh vertices +
-   fitted camera. Only the 40 rows in the correspondence table participate;
-   no jaw/oval point-to-vertex constraints are added.
+   stages. The camera-only stage first supplies a coarse pose. The mean BFM is
+   then rasterized from that pose and each semantic vertex is compared with
+   the inverse-depth Z-buffer in a 3x3 pixel neighborhood. Landmarks behind a
+   nearer facial surface (for example, the far eye in a profile image) are
+   removed before the joint camera/identity/expression solve and its automatic
+   residual-based outlier rejection. If the mesh has no topology or fewer
+   than six landmarks remain visible, the filter safely falls back to the
+   original constraints. Output: this person's personalized 3D mesh vertices
+   + fitted camera. Only rows in the 40-point correspondence table
+   participate; no jaw/oval point-to-vertex constraints are added. The fitting
+   report records whether visibility filtering ran and how many constraints it
+   removed.
         ↓
 4. View-dependent silhouette geometry fitting
    face_recon/silhouette_fitting.h / .cc
@@ -134,7 +146,8 @@ runs things), not by directory:
 5. Rasterization (visibility test, used by the next two steps)
    face_recon/rasterizer.h / .cc
    tests/rasterizer_test.cpp
-   Given the refined mesh and camera from step 4, this answers a geometric
+   Used once after the coarse camera fit for landmark self-occlusion and again
+   with the refined mesh after step 4. It answers a geometric
    question: "if I render this mesh from this camera, which triangle is
    visible at each pixel, and exactly where inside that triangle does the
    pixel fall?" It projects every vertex to 2D, scans each triangle's pixel

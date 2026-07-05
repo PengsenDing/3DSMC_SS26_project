@@ -119,6 +119,8 @@ int main() {
   if (!result.usable || result.final_rmse >= 1.0e-4 ||
       result.final_rmse >= result.initial_rmse ||
       result.contour_landmark_count != 0 ||
+      result.visibility_filter_applied ||
+      result.occluded_landmark_count != 0 ||
       result.reprojections.size() != correspondences.size()) {
     std::cerr << result.solver_summary << "\n";
     return 1;

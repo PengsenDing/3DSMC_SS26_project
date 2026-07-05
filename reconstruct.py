@@ -80,6 +80,17 @@ def parse_args() -> argparse.Namespace:
         help="Weight keeping perspective focal length near a portrait prior",
     )
     parser.add_argument(
+        "--no-landmark-visibility-filter",
+        action="store_true",
+        help="Keep self-occluded semantic landmarks in the joint BFM fit",
+    )
+    parser.add_argument(
+        "--landmark-depth-tolerance",
+        type=float,
+        default=1.0e-4,
+        help="Inverse-depth Z-buffer tolerance for landmark visibility",
+    )
+    parser.add_argument(
         "--silhouette-mask",
         type=Path,
         help=(
@@ -200,6 +211,8 @@ def main() -> int:
         str(args.albedo_components),
         "--focal-regularization",
         str(args.focal_regularization),
+        "--landmark-depth-tolerance",
+        str(args.landmark_depth_tolerance),
         "--silhouette-resolution",
         str(args.silhouette_resolution),
         "--silhouette-iterations",
@@ -213,6 +226,8 @@ def main() -> int:
         "--texture-smoothness",
         str(args.texture_smoothness),
     ]
+    if args.no_landmark_visibility_filter:
+        fitting_command.append("--no-landmark-visibility-filter")
     if args.no_silhouette_fitting:
         fitting_command.append("--no-silhouette-fitting")
     else:

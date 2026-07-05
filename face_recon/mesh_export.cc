@@ -137,6 +137,10 @@ bool SaveFittingReport(const FittingResult& result, const std::string& filename)
   output << "matched_landmarks: " << result.reprojections.size() << "\n";
   output << "semantic_landmarks: " << result.semantic_landmark_count << "\n";
   output << "contour_landmarks: " << result.contour_landmark_count << "\n";
+  output << "visibility_filter_applied: "
+         << (result.visibility_filter_applied ? "yes" : "no") << "\n";
+  output << "occluded_semantic_landmarks: "
+         << result.occluded_landmark_count << "\n";
   output << "rejected_semantic_landmarks: "
          << result.rejected_landmark_count << "\n";
   output << "initial_rmse_normalized: " << result.initial_rmse << "\n";

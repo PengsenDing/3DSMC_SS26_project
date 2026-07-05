@@ -27,6 +27,12 @@ struct FittingOptions {
   double focal_regularization = 0.25;
   double huber_delta = 0.01;
   double outlier_threshold = 0.035;
+  // After the camera-only initialization, rasterize the mean BFM and remove
+  // semantic landmarks hidden by another part of the face from the joint fit.
+  bool filter_occluded_landmarks = true;
+  // Rasterizer stores inverse optical depth; this is an absolute tolerance in
+  // that same space when comparing a landmark vertex with the Z-buffer.
+  float landmark_visibility_depth_tolerance = 1.0e-4f;
   bool verbose = false;
 };
 
@@ -55,7 +61,9 @@ struct FittingResult {
   std::vector<LandmarkReprojection> reprojections;
   int semantic_landmark_count = 0;
   int contour_landmark_count = 0;  // Always zero: contours use silhouette fitting.
+  int occluded_landmark_count = 0;
   int rejected_landmark_count = 0;
+  bool visibility_filter_applied = false;
   double initial_rmse = 0.0;
   double final_rmse = 0.0;
   std::string solver_summary;

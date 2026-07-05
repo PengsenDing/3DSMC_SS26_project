@@ -1,4 +1,5 @@
 #include "face_recon/fitting.h"
+#include "face_recon/rasterizer.h"
 
 #include <ceres/ceres.h>
 #include <ceres/dynamic_autodiff_cost_function.h>
@@ -167,6 +168,36 @@ double InferImageAspectRatio(
   const double width = median(&widths);
   const double height = median(&heights);
   return width > 0.0 && height > 0.0 ? width / height : 1.0;
+}
+
+std::pair<int, int> InferImageDimensions(
+    const std::vector<face_reconstruction::Landmark2D>& landmarks,
+    double aspect_ratio) {
+  std::vector<double> widths;
+  std::vector<double> heights;
+  for (const auto& landmark : landmarks) {
+    if (std::abs(landmark.x_norm) > 1.0e-6 && landmark.u > 0.0f) {
+      widths.push_back(landmark.u / landmark.x_norm);
+    }
+    if (std::abs(landmark.y_norm) > 1.0e-6 && landmark.v > 0.0f) {
+      heights.push_back(landmark.v / landmark.y_norm);
+    }
+  }
+  const auto median = [](std::vector<double>* values) {
+    const auto middle = values->begin() + values->size() / 2;
+    std::nth_element(values->begin(), middle, values->end());
+    return *middle;
+  };
+  if (!widths.empty() && !heights.empty()) {
+    return {std::max(1, static_cast<int>(std::lround(median(&widths)))),
+            std::max(1, static_cast<int>(std::lround(median(&heights))))};
+  }
+
+  constexpr int kFallbackWidth = 1024;
+  const int fallback_height = std::max(
+      1, static_cast<int>(std::lround(kFallbackWidth /
+                                      std::max(aspect_ratio, 1.0e-6))));
+  return {kFallbackWidth, fallback_height};
 }
 
 std::vector<MatchedLandmark> BuildMatchedLandmarks(
@@ -417,6 +448,64 @@ std::array<double, 7> CameraArray(const CameraParameters& camera) {
           std::log(camera.translation.z()), std::log(camera.focal_length)};
 }
 
+CameraParameters CameraParametersFromArray(
+    const std::array<double, 7>& camera,
+    double aspect_ratio) {
+  CameraParameters result;
+  result.angle_axis = Eigen::Vector3d(camera[0], camera[1], camera[2]);
+  result.translation =
+      Eigen::Vector3d(camera[3], camera[4], std::exp(camera[5]));
+  result.focal_length = std::exp(camera[6]);
+  result.aspect_ratio = aspect_ratio;
+  return result;
+}
+
+std::vector<MatchedLandmark> FilterOccludedLandmarks(
+    const BfmModel& model,
+    const std::vector<face_reconstruction::Landmark2D>& landmarks,
+    const std::vector<MatchedLandmark>& matches,
+    const std::array<double, 7>& camera,
+    double aspect_ratio,
+    const Eigen::VectorXd& shape,
+    const Eigen::VectorXd& expression,
+    float depth_tolerance,
+    int* occluded_count,
+    bool* filter_applied) {
+  *occluded_count = 0;
+  *filter_applied = false;
+  if (model.triangles().size() == 0) {
+    return matches;
+  }
+
+  const auto [width, height] = InferImageDimensions(landmarks, aspect_ratio);
+  const Eigen::VectorXd vertices = GenerateVertices(model, shape, expression);
+  const RasterizationResult rasterization = RasterizeMesh(
+      vertices, model.triangles(),
+      CameraParametersFromArray(camera, aspect_ratio), width, height);
+  const std::vector<bool> visible_vertices =
+      ComputeVisibleVertices(rasterization, depth_tolerance);
+
+  std::vector<MatchedLandmark> visible_matches;
+  visible_matches.reserve(matches.size());
+  for (const auto& match : matches) {
+    if (match.bfm_vertex_id >= 0 &&
+        match.bfm_vertex_id < static_cast<int>(visible_vertices.size()) &&
+        visible_vertices[match.bfm_vertex_id]) {
+      visible_matches.push_back(match);
+    }
+  }
+
+  // Six 2D/3D correspondences are the minimum accepted by this fitter. A bad
+  // initialization must not be allowed to discard every constraint.
+  if (visible_matches.size() < 6) {
+    return matches;
+  }
+  *occluded_count =
+      static_cast<int>(matches.size() - visible_matches.size());
+  *filter_applied = true;
+  return visible_matches;
+}
+
 }  // namespace
 
 Eigen::VectorXd GenerateVertices(const BfmModel& model,
@@ -486,6 +575,14 @@ FittingResult FitBfmToLandmarks(
   const ceres::Solver::Summary camera_summary =
       SolveProblem(camera_problem, options.camera_iterations, options.verbose);
 
+  if (options.filter_occluded_landmarks) {
+    semantic_matches = FilterOccludedLandmarks(
+        model, landmarks, semantic_matches, camera, aspect_ratio, shape,
+        expression, options.landmark_visibility_depth_tolerance,
+        &result.occluded_landmark_count,
+        &result.visibility_filter_applied);
+  }
+
   semantic_matches =
       FilterOutliers(semantic_matches, camera, aspect_ratio, shape,
                      expression, options.outlier_threshold,
@@ -526,6 +623,11 @@ FittingResult FitBfmToLandmarks(
   result.contour_landmark_count = 0;
   result.solver_summary =
       "Camera stage: " + camera_summary.BriefReport() +
+      "\nLandmark visibility: " +
+      (result.visibility_filter_applied
+           ? (std::to_string(result.occluded_landmark_count) +
+              " self-occluded landmark(s) removed")
+           : "filter not applied (disabled, no topology, or fewer than 6 visible landmarks)") +
       "\nJoint stage: " + joint_summary.BriefReport();
 
   for (const auto& match : semantic_matches) {

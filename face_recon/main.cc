@@ -38,6 +38,7 @@ int main(int argc, char* argv[]) {
   face_recon::SilhouetteFittingOptions silhouette_options;
   face_recon::TextureFittingOptions texture_options;
   bool disable_silhouette_fitting = false;
+  bool disable_landmark_visibility_filter = false;
 
   // Define the available CLI flags and options.
   app.add_option("-m,--model", model_path, "Path to the Basel Face Model HDF5 asset container")->check(CLI::ExistingFile);
@@ -73,6 +74,12 @@ int main(int argc, char* argv[]) {
                  "Weight of the sparse landmark reprojection term");
   app.add_option("--outlier-threshold", fitting_options.outlier_threshold,
                  "Maximum normalized residual before rejecting a semantic landmark");
+  app.add_flag("--no-landmark-visibility-filter",
+               disable_landmark_visibility_filter,
+               "Keep self-occluded semantic landmarks in the joint fit");
+  app.add_option("--landmark-depth-tolerance",
+                 fitting_options.landmark_visibility_depth_tolerance,
+                 "Inverse-depth Z-buffer tolerance for landmark visibility");
   app.add_flag("-v,--verbose-optimization", verbose_optimization,
                "Print Ceres iteration progress");
   app.add_flag("--diagnostics", save_diagnostics,
@@ -133,7 +140,8 @@ int main(int argc, char* argv[]) {
       fitting_options.shape_regularization < 0.0 ||
       fitting_options.expression_regularization < 0.0 ||
       fitting_options.focal_regularization < 0.0 ||
-      fitting_options.outlier_threshold <= 0.0) {
+      fitting_options.outlier_threshold <= 0.0 ||
+      fitting_options.landmark_visibility_depth_tolerance <= 0.0f) {
     std::cerr << "[ERROR] Fitting weights and outlier threshold must be "
                  "valid positive values; regularization may be zero.\n";
     return 1;
@@ -169,6 +177,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   photometric_options.save_diagnostics = save_diagnostics;
+  fitting_options.filter_occluded_landmarks =
+      !disable_landmark_visibility_filter;
   silhouette_options.enabled = !disable_silhouette_fitting;
   silhouette_options.save_diagnostics = save_diagnostics;
   texture_options.save_diagnostics = save_diagnostics;
