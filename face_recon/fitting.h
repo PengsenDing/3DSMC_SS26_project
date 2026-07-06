@@ -24,6 +24,11 @@ struct FittingOptions {
   // overfit a comparatively small set of 2D landmark observations.
   double shape_regularization = 0.1;
   double expression_regularization = 0.08;
+  // Additional joint-stage evidence for blinking. Individual eyelid points
+  // localize the contour, while the gap residual directly observes the
+  // upper-to-lower lid separation and is insensitive to image translation.
+  double eye_weight_multiplier = 3.0;
+  double eyelid_gap_weight = 12.0;
   double focal_regularization = 0.25;
   double huber_delta = 0.01;
   double outlier_threshold = 0.035;
@@ -59,6 +64,18 @@ struct LandmarkReprojection {
   double weight_multiplier = 1.0;
 };
 
+// Per-region tracking reliability in [0,1]. Each value combines the fraction
+// of the region's landmark correspondences that survived visibility/outlier
+// filtering with how well the surviving ones are explained at the solution;
+// eye confidences additionally fall off continuously for the far-side eye at
+// large yaw. 1.0 means fully trusted; regions with no observations get 0.
+struct RegionConfidences {
+  double left_eye = 1.0;
+  double right_eye = 1.0;
+  double mouth = 1.0;
+  double pose = 1.0;
+};
+
 struct FittingResult {
   bool usable = false;
   CameraParameters camera;
@@ -73,12 +90,69 @@ struct FittingResult {
   int mask_rejected_landmark_count = 0;
   int mask_corrected_landmark_count = 0;
   int rejected_landmark_count = 0;
+  int eyelid_gap_pair_count = 0;
   bool visibility_filter_applied = false;
+  RegionConfidences confidences;
   double estimated_yaw = 0.0;
   double initial_rmse = 0.0;
   double final_rmse = 0.0;
   std::string solver_summary;
 };
+
+// Options for tracking a known identity through a sequence. Unlike the full
+// reconstruction, tracking keeps shape and focal length fixed and only
+// updates rigid pose and expression from the previous frame.
+struct TrackingOptions {
+  int iterations = 80;
+  double landmark_weight = 100.0;
+  // Weaker than the single-image prior (0.08): only ~9 of the 40 semantic
+  // landmarks observe the mouth, so at 0.08 the prior overpowers them and
+  // talking expressions come out heavily damped (the mouth barely opens).
+  double expression_regularization = 0.02;
+  // Extra weight on lips/chin landmarks; during speech they carry nearly all
+  // of the expression signal but are outnumbered by the static landmarks.
+  double mouth_weight_multiplier = 6.0;
+  double eye_weight_multiplier = 3.0;
+  double eyelid_gap_weight = 12.0;
+  double pose_temporal_weight = 2.0;
+  double expression_temporal_weight = 1.0;
+  double acceleration_weight = 0.25;
+  // Apply the same Z-buffer visibility test used by single-image fitting to
+  // every tracking frame before optimizing expression and pose.
+  bool filter_occluded_landmarks = true;
+  float landmark_visibility_depth_tolerance = 1.0e-4f;
+  // Residuals are evaluated at the previous frame's warm start, so fast
+  // motion (a mouth opening between frames) legitimately produces errors of
+  // ~0.05 normalized units. The robust loss and the outlier gate must stay
+  // clear of that range or the very landmarks carrying the expression change
+  // get capped and rejected, freezing the expression at the previous frame.
+  double huber_delta = 0.03;
+  double outlier_threshold = 0.12;
+  double failure_rmse = 0.06;
+  // Region-aware uncertainty. When enabled, eyelid landmark and gap weights
+  // of the far-side eye fade continuously between the two yaw angles instead
+  // of only being cut binarily at the 0.55 pose filter, and a frame whose
+  // pose confidence falls below the minimum is reported unusable so the
+  // driver reinitializes instead of rendering an implausible state.
+  bool region_confidence_control = true;
+  double eye_confidence_soft_yaw = 0.35;
+  double eye_confidence_full_yaw = 0.70;
+  // Linear ramp mapping a region's landmark rmse (normalized image units) to
+  // confidence: 1 at or below good, 0 at or beyond bad.
+  double confidence_rmse_good = 0.02;
+  double confidence_rmse_bad = 0.08;
+  double min_pose_confidence = 0.2;
+  bool verbose = false;
+};
+
+FittingResult TrackBfmFrame(
+    const BfmModel& model,
+    const std::vector<face_reconstruction::Landmark2D>& landmarks,
+    const std::vector<face_reconstruction::BfmMediaPipeCorrespondence>& correspondences,
+    const FittingResult& identity,
+    const FittingResult& previous,
+    const FittingResult* previous_previous = nullptr,
+    const TrackingOptions& options = {});
 
 FittingResult FitBfmToLandmarks(
     const BfmModel& model,
@@ -91,10 +165,24 @@ Eigen::VectorXd GenerateVertices(const BfmModel& model,
                                  const Eigen::VectorXd& expression);
 Eigen::Vector2d ProjectVertex(const Eigen::Vector3d& vertex,
                               const CameraParameters& camera);
+
+// Applies a source trajectory's pose delta (relative to its first frame) to
+// a target photograph's fitted baseline camera. Rotations are composed on
+// SO(3); angle-axis vectors are never added component-wise.
+CameraParameters TransferRelativeCameraPose(
+    const CameraParameters& target_reference,
+    const CameraParameters& source_reference,
+    const CameraParameters& source_current,
+    double scale = 1.0);
 Eigen::VectorXd ApplyCameraRotation(const Eigen::VectorXd& vertices,
                                     const CameraParameters& camera);
 bool IsFarSideLandmark(const std::string& name, double yaw,
                        double yaw_threshold);
+// Continuous confidence in the given eye's landmarks under head yaw: 1 while
+// the eye faces the camera, fading linearly to 0 as the far-side eye
+// approaches self-occlusion. Positive yaw turns the right side away.
+double FarSideEyeConfidence(bool left_eye, double yaw, double soft_yaw,
+                            double full_yaw);
 
 }  // namespace face_recon
 

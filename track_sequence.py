@@ -42,8 +42,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pose-temporal-weight", type=float, default=2.0)
     parser.add_argument("--expression-temporal-weight", type=float, default=1.0)
     parser.add_argument("--acceleration-weight", type=float, default=0.25)
+    parser.add_argument("--eye-weight", type=float, default=3.0)
+    parser.add_argument("--eyelid-gap-weight", type=float, default=12.0)
+    parser.add_argument(
+        "--no-visibility-filter",
+        action="store_true",
+        help="Disable per-frame Z-buffer landmark visibility filtering",
+    )
     parser.add_argument("--failure-rmse", type=float, default=0.06)
     parser.add_argument("--tracking-iterations", type=int, default=10)
+    parser.add_argument(
+        "--no-region-confidence",
+        action="store_true",
+        help="Disable region-aware uncertainty control in the tracker",
+    )
+    parser.add_argument("--min-pose-confidence", type=float, default=0.2)
     return parser.parse_args()
 
 
@@ -85,6 +98,16 @@ def extract_frames(
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open video: {source}")
+    # Phone videos carry a rotation flag instead of rotated pixels; without
+    # honoring it, portrait recordings are extracted sideways.
+    capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
+    rotation = {
+        90.0: cv2.ROTATE_90_CLOCKWISE,
+        180.0: cv2.ROTATE_180,
+        270.0: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }.get(capture.get(cv2.CAP_PROP_ORIENTATION_META))
+    if capture.get(cv2.CAP_PROP_ORIENTATION_AUTO) > 0:
+        rotation = None  # The backend already applies the metadata rotation.
     fps = capture.get(cv2.CAP_PROP_FPS)
     fps = fps if fps > 0 else 25.0
     frames = []
@@ -93,6 +116,8 @@ def extract_frames(
         ok, frame = capture.read()
         if not ok:
             break
+        if rotation is not None:
+            frame = cv2.rotate(frame, rotation)
         frame = resize_for_tracking(frame, max_dimension, cv2)
         target = destination / f"frame_{index:06d}.png"
         if not cv2.imwrite(str(target), frame):
@@ -193,11 +218,18 @@ def main() -> int:
         "--pose-temporal-weight", str(args.pose_temporal_weight),
         "--expression-temporal-weight", str(args.expression_temporal_weight),
         "--acceleration-weight", str(args.acceleration_weight),
+        "--eye-weight", str(args.eye_weight),
+        "--eyelid-gap-weight", str(args.eyelid_gap_weight),
         "--failure-rmse", str(args.failure_rmse),
         "--iterations", str(args.tracking_iterations),
+        "--min-pose-confidence", str(args.min_pose_confidence),
     ]
     if args.save_meshes:
         command.append("--save-meshes")
+    if args.no_visibility_filter:
+        command.append("--no-visibility-filter")
+    if args.no_region_confidence:
+        command.append("--no-region-confidence")
     run(command)
     encode_overlay_video(frames, tracking_dir / "overlays", output / "tracking_overlay.mp4", fps)
     (output / "sequence.json").write_text(

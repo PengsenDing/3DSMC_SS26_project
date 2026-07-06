@@ -93,6 +93,52 @@ Other useful commands:
 # Open face.off or face.ply in MeshLab to inspect the reconstructed mesh
 ```
 
+## Video Tracking and One-Shot Reenactment
+
+Video tracking and reenactment are optional modules; the single-image command
+above remains unchanged.
+
+```bash
+# Track pose, BFM expression, and observed/fitted left/right eye opening.
+python track_sequence.py inputs/talking.mp4 --output sequences/talking
+
+# Animate one reconstructed photograph with expression, explicit eyelid
+# correction, and source-relative SO(3) head pose.
+python transfer_expression.py reconstructions/target_3 sequences/talking \
+  --output transfers/talking_to_target3
+```
+
+Useful ablations are `--no-pose`, `--pose-only`,
+`--no-blink-correction`, `--blink-scale`, and `--expression-scale`. The
+tracker stores the observed and BFM-fitted opening of both eyes in
+`tracking/tracking.csv`. Their residual drives independent smooth eyelid
+correctives, bypassing blink/wide-eye motion that BFM 2019's expression PCA
+cannot represent.
+
+Reenactment uses `--texture-mode projective` by default: reference-frame UVs
+are projected once and every output pixel bilinearly samples the original
+target photograph. This avoids the triangular moire produced when an
+under-constrained single view is represented by tens of thousands of
+independently fitted vertex colors. Use `--texture-mode vertex` only for the
+old fitted-PLY ablation.
+
+Pass `--save-conditions` to export `coarse_rgb`, `depth`, `normals`, and
+`visibility` images for every frame. An optional learned renderer can be
+connected without changing the 3D pipeline:
+
+```bash
+python transfer_expression.py reconstructions/target_3 sequences/talking \
+  --save-conditions \
+  --completion-command \
+  'python neural_renderer.py --target {target} --coarse {coarse} --depth {depth} --normal {normal} --mask {mask} --output {output}'
+```
+
+The command is an explicit backend protocol, not a bundled pretrained model;
+without it, deterministic background inpainting and feathered CPU
+compositing provide the reproducible baseline. See
+`notes/full_pose_blink_aware_reenactment.md` for the research questions,
+Face2Face comparison, and evaluation plan.
+
 ## Pipeline Steps
 
 This is organized by *what happens when* (the order `reconstruct.py` actually

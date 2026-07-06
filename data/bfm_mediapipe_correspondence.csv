@@ -17,8 +17,12 @@ left.eyebrow.inner_upper,13713,107
 left.nose.wing.outer,15670,129
 left.eye.corner_inner,15733,133
 left.eye.bottom,14042,145
+left.eye.bottom.outer_mid,15742,144
+left.eye.bottom.inner_mid,18298,153
 center.chin.tip,15867,152
 left.eye.top,15736,159
+left.eye.top.outer_mid,22386,160
+left.eye.top.inner_mid,14253,158
 left.nasolabial_fold.center,15880,206
 left.nasolabial_fold.bottom,15893,216
 left.eyebrow.inner_lower,13945,55
@@ -33,7 +37,11 @@ right.eyebrow.inner_upper,9,336
 right.nose.wing.outer,1966,358
 right.eye.corner_inner,2029,362
 right.eye.bottom,338,374
+right.eye.bottom.outer_mid,2038,373
+right.eye.bottom.inner_mid,4394,380
 right.eye.top,2032,386
+right.eye.top.outer_mid,8434,387
+right.eye.top.inner_mid,549,385
 right.nasolabial_fold.center,2115,426
 right.nasolabial_fold.bottom,2127,436
 right.eyebrow.bend.lower,236,283

@@ -141,6 +141,24 @@ target_link_libraries(
 )
 face_reconstruction_enable_warnings(face_reconstruction)
 
+add_executable(face_sequence_tracker face_recon/sequence_tracker.cc)
+target_link_libraries(
+    face_sequence_tracker
+    PRIVATE
+        reconstruction_fitting
+        CLI11::CLI11
+)
+face_reconstruction_enable_warnings(face_sequence_tracker)
+
+add_executable(face_expression_transfer face_recon/expression_transfer.cc)
+target_link_libraries(
+    face_expression_transfer
+    PRIVATE
+        reconstruction_fitting
+        CLI11::CLI11
+)
+face_reconstruction_enable_warnings(face_expression_transfer)
+
 if(BUILD_TESTING)
     add_executable(fitting_test tests/fitting_test.cpp)
     target_link_libraries(fitting_test PRIVATE reconstruction_fitting)

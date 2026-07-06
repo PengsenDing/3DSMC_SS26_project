@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -58,10 +59,79 @@ def parse_args() -> argparse.Namespace:
         help="Gain applied to the transferred expression coefficients",
     )
     parser.add_argument(
+        "--pose-scale",
+        type=float,
+        default=1.0,
+        help="Gain applied to source-relative head rotation and translation",
+    )
+    parser.add_argument(
+        "--no-pose",
+        action="store_true",
+        help="Transfer expression only and keep the target head pose fixed",
+    )
+    parser.add_argument(
+        "--pose-only",
+        action="store_true",
+        help="Transfer relative head pose while retaining the target expression",
+    )
+    parser.add_argument(
+        "--no-blink-correction",
+        action="store_true",
+        help="Disable explicit left/right eyelid corrective deformation",
+    )
+    parser.add_argument(
+        "--no-uncertainty-control",
+        action="store_true",
+        help="Ignore tracker region confidences (raw eyelid signals, no gating)",
+    )
+    parser.add_argument(
+        "--head-warp",
+        action="store_true",
+        help="Warp hair/head silhouette along the transferred rigid motion",
+    )
+    parser.add_argument(
+        "--blink-scale",
+        type=float,
+        default=1.0,
+        help="Gain for observed-minus-fitted eyelid opening correction",
+    )
+    parser.add_argument(
+        "--eye-warp-gain",
+        type=float,
+        default=2.5,
+        help="Gain for visible eye-aperture scaling relative to source frame 0",
+    )
+    parser.add_argument(
+        "--save-conditions",
+        action="store_true",
+        help="Save coarse RGB, depth, normals, and visibility per output frame",
+    )
+    parser.add_argument(
+        "--completion-command",
+        help=(
+            "Optional neural completion command template. Available fields: "
+            "{target}, {coarse}, {depth}, {normal}, {mask}, {output}"
+        ),
+    )
+    parser.add_argument(
+        "--no-background-inpaint",
+        action="store_true",
+        help="Keep the original target face behind pose-transferred frames",
+    )
+    parser.add_argument(
         "--feather",
         type=int,
         default=-1,
         help="Compositing feather radius in pixels; -1 scales with image size",
+    )
+    parser.add_argument(
+        "--texture-mode",
+        choices=("projective", "vertex"),
+        default="projective",
+        help=(
+            "Projectively sample the target photo (default, avoids vertex-color "
+            "moire) or use fitted PLY vertex RGB for ablation"
+        ),
     )
     parser.add_argument("--fps", type=float, help="Output FPS; defaults to the source video")
     parser.add_argument("--max-frames", type=int, help="Optional development/debug limit")
@@ -195,6 +265,33 @@ def encode_comparison(
     return writer is not None
 
 
+def run_completion_backend(
+    template: str, coarse_frames: list[Path], conditions: Path,
+    target_image: Path, output_dir: Path
+) -> list[Path]:
+    completed = output_dir / "completed_frames"
+    completed.mkdir(parents=True, exist_ok=True)
+    outputs: list[Path] = []
+    for position, coarse_frame in enumerate(coarse_frames, start=1):
+        name = coarse_frame.name
+        output = completed / name
+        values = {
+            "target": str(target_image),
+            "coarse": str(conditions / "coarse_rgb" / name),
+            "depth": str(conditions / "depth" / name),
+            "normal": str(conditions / "normals" / name),
+            "mask": str(conditions / "visibility" / name),
+            "output": str(output),
+        }
+        command = shlex.split(template.format(**values))
+        print(f"[COMPLETION] {position}/{len(coarse_frames)}", flush=True)
+        run(command)
+        if not output.is_file():
+            raise RuntimeError(f"Completion backend did not create: {output}")
+        outputs.append(output)
+    return outputs
+
+
 def main() -> int:
     args = parse_args()
     target = args.target.expanduser().resolve()
@@ -233,10 +330,28 @@ def main() -> int:
         "--trajectory", str(trajectory),
         "--output", str(output),
         "--expression-scale", str(args.expression_scale),
+        "--pose-scale", str(args.pose_scale),
         "--feather", str(args.feather),
+        "--texture-mode", args.texture_mode,
     ]
     if args.relative:
         command.append("--relative")
+    if args.no_pose:
+        command.append("--no-pose")
+    if args.pose_only:
+        command.append("--pose-only")
+    if args.no_blink_correction:
+        command.append("--no-blink-correction")
+    if args.no_uncertainty_control:
+        command.append("--no-uncertainty-control")
+    if args.head_warp:
+        command.append("--head-warp")
+    command.extend(["--blink-scale", str(args.blink_scale)])
+    command.extend(["--eye-warp-gain", str(args.eye_warp_gain)])
+    if args.save_conditions or args.completion_command:
+        command.append("--save-conditions")
+    if args.no_background_inpaint:
+        command.append("--no-background-inpaint")
     if args.max_frames is not None:
         command.extend(["--max-frames", str(args.max_frames)])
     run(command)
@@ -244,14 +359,20 @@ def main() -> int:
     frame_paths = sorted((output / "frames").glob("frame_*.png"))
     if not frame_paths:
         raise RuntimeError("Expression transfer produced no frames")
+    encoded_frames = frame_paths
+    if args.completion_command:
+        encoded_frames = run_completion_backend(
+            args.completion_command, frame_paths, output / "conditions",
+            target_image, output
+        )
     fps = args.fps or source_fps(tracking)
     result_video = output / "transfer.mp4"
-    encode_video(frame_paths, result_video, fps)
+    encode_video(encoded_frames, result_video, fps)
 
     comparison_video = None
     if not args.no_comparison:
         comparison_path = output / "comparison.mp4"
-        if encode_comparison(frame_paths, tracking / "frames", comparison_path, fps):
+        if encode_comparison(encoded_frames, tracking / "frames", comparison_path, fps):
             comparison_video = comparison_path
 
     (output / "transfer.json").write_text(
@@ -265,6 +386,18 @@ def main() -> int:
                 "fps": fps,
                 "mode": "relative" if args.relative else "absolute",
                 "expression_scale": args.expression_scale,
+                "pose_transfer": not args.no_pose,
+                "pose_only": args.pose_only,
+                "pose_scale": args.pose_scale,
+                "blink_correction": not args.no_blink_correction,
+                "uncertainty_control": not args.no_uncertainty_control,
+                "head_warp": args.head_warp,
+                "blink_scale": args.blink_scale,
+                "eye_warp_gain": args.eye_warp_gain,
+                "background_inpaint": not args.no_background_inpaint,
+                "texture_mode": args.texture_mode,
+                "geometry_conditions": bool(args.save_conditions or args.completion_command),
+                "completion_backend": args.completion_command,
                 "result_video": result_video.name,
                 "comparison_video": comparison_video.name if comparison_video else None,
             },

@@ -9,6 +9,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <array>
@@ -99,6 +100,69 @@ class LandmarkResidual {
   double sqrt_weight_;
 };
 
+class EyelidGapResidual {
+ public:
+  EyelidGapResidual(MatchedLandmark upper, MatchedLandmark lower,
+                    double aspect_ratio, double weight)
+      : upper_(std::move(upper)),
+        lower_(std::move(lower)),
+        aspect_ratio_(aspect_ratio),
+        sqrt_weight_(std::sqrt(weight)),
+        observed_gap_(lower_.target - upper_.target) {}
+
+  template <typename T>
+  bool operator()(T const* const* parameters, T* residuals) const {
+    T upper[2];
+    T lower[2];
+    Project(upper_, parameters, upper);
+    Project(lower_, parameters, lower);
+    residuals[0] = T(sqrt_weight_) *
+                   ((lower[0] - upper[0]) - T(observed_gap_.x()));
+    residuals[1] = T(sqrt_weight_) *
+                   ((lower[1] - upper[1]) - T(observed_gap_.y()));
+    return true;
+  }
+
+ private:
+  template <typename T>
+  void Project(const MatchedLandmark& landmark,
+               T const* const* parameters,
+               T* projected) const {
+    const T* camera = parameters[0];
+    const T* shape = parameters[1];
+    const T* expression = parameters[2];
+    T point[3] = {T(landmark.mean.x()), T(landmark.mean.y()),
+                  T(landmark.mean.z())};
+    for (int column = 0; column < landmark.shape_basis.cols(); ++column) {
+      for (int axis = 0; axis < 3; ++axis) {
+        point[axis] += T(landmark.shape_basis(axis, column)) * shape[column];
+      }
+    }
+    for (int column = 0; column < landmark.expression_basis.cols(); ++column) {
+      for (int axis = 0; axis < 3; ++axis) {
+        point[axis] +=
+            T(landmark.expression_basis(axis, column)) * expression[column];
+      }
+    }
+    T rotated[3];
+    ceres::AngleAxisRotatePoint(camera, point, rotated);
+    using std::exp;
+    const T depth = exp(camera[5]) - rotated[2];
+    const T focal_length = exp(camera[6]);
+    projected[0] =
+        T(0.5) + focal_length * (rotated[0] + camera[3]) / depth;
+    projected[1] =
+        T(0.5) - focal_length * T(aspect_ratio_) *
+                     (rotated[1] + camera[4]) / depth;
+  }
+
+  MatchedLandmark upper_;
+  MatchedLandmark lower_;
+  double aspect_ratio_;
+  double sqrt_weight_;
+  Eigen::Vector2d observed_gap_;
+};
+
 class NormalizedPcaPrior {
  public:
   NormalizedPcaPrior(int count, double weight)
@@ -116,6 +180,43 @@ class NormalizedPcaPrior {
   int count_;
   double sqrt_weight_;
 };
+
+// Quadratic pull of a parameter block toward a fixed reference vector; used
+// for the temporal (previous frame) and acceleration (constant-velocity
+// extrapolation) priors during sequence tracking.
+class ReferencePrior {
+ public:
+  ReferencePrior(Eigen::VectorXd reference, double weight)
+      : reference_(std::move(reference)), sqrt_weight_(std::sqrt(weight)) {}
+
+  template <typename T>
+  bool operator()(T const* const* parameters, T* residuals) const {
+    for (int index = 0; index < reference_.size(); ++index) {
+      residuals[index] =
+          T(sqrt_weight_) * (parameters[0][index] - T(reference_[index]));
+    }
+    return true;
+  }
+
+ private:
+  Eigen::VectorXd reference_;
+  double sqrt_weight_;
+};
+
+void AddReferencePrior(ceres::Problem& problem,
+                       double* parameters,
+                       int count,
+                       const Eigen::VectorXd& reference,
+                       double weight) {
+  if (count <= 0 || weight <= 0.0 || reference.size() != count) {
+    return;
+  }
+  auto* cost = new ceres::DynamicAutoDiffCostFunction<ReferencePrior, 4>(
+      new ReferencePrior(reference, weight));
+  cost->AddParameterBlock(count);
+  cost->SetNumResiduals(count);
+  problem.AddResidualBlock(cost, nullptr, parameters);
+}
 
 class FocalLengthPrior {
  public:
@@ -385,6 +486,142 @@ void AddLandmarkResiduals(ceres::Problem& problem,
   }
 }
 
+bool IsEyelidLandmark(const std::string& name) {
+  return name.find(".eye.top") != std::string::npos ||
+         name.find(".eye.bottom") != std::string::npos;
+}
+
+void ApplyEyelidWeights(std::vector<MatchedLandmark>* matches,
+                        double multiplier) {
+  if (multiplier <= 1.0) return;
+  for (auto& match : *matches) {
+    if (IsEyelidLandmark(match.name)) match.weight *= multiplier;
+  }
+}
+
+enum class LandmarkRegion { kLeftEye, kRightEye, kMouth, kOther };
+
+LandmarkRegion RegionOf(const std::string& name) {
+  // The trailing dot keeps "left.eyebrow.*" out of the eye region.
+  if (name.rfind("left.eye.", 0) == 0) return LandmarkRegion::kLeftEye;
+  if (name.rfind("right.eye.", 0) == 0) return LandmarkRegion::kRightEye;
+  if (name.find("lips") != std::string::npos ||
+      name.find("chin") != std::string::npos) {
+    return LandmarkRegion::kMouth;
+  }
+  return LandmarkRegion::kOther;
+}
+
+int CountRegion(const std::vector<MatchedLandmark>& matches,
+                LandmarkRegion region) {
+  return static_cast<int>(
+      std::count_if(matches.begin(), matches.end(),
+                    [region](const MatchedLandmark& match) {
+                      return RegionOf(match.name) == region;
+                    }));
+}
+
+double RegionRmse(const std::vector<MatchedLandmark>& matches,
+                  LandmarkRegion region,
+                  const std::array<double, 7>& camera,
+                  double aspect_ratio,
+                  const Eigen::VectorXd& shape,
+                  const Eigen::VectorXd& expression) {
+  double squared_error = 0.0;
+  int count = 0;
+  for (const auto& match : matches) {
+    if (RegionOf(match.name) != region) continue;
+    const Eigen::Vector3d point =
+        match.mean + match.shape_basis * shape +
+        match.expression_basis * expression;
+    squared_error +=
+        (ProjectPoint(point, camera, aspect_ratio) - match.target)
+            .squaredNorm();
+    ++count;
+  }
+  return count > 0 ? std::sqrt(squared_error / count)
+                   : std::numeric_limits<double>::quiet_NaN();
+}
+
+double RmseConfidence(double rmse, double good, double bad) {
+  if (!std::isfinite(rmse)) return 0.0;
+  if (bad <= good) return rmse <= good ? 1.0 : 0.0;
+  return std::clamp((bad - rmse) / (bad - good), 0.0, 1.0);
+}
+
+double RegionSupportConfidence(const std::vector<MatchedLandmark>& surviving,
+                               LandmarkRegion region,
+                               int total,
+                               const std::array<double, 7>& camera,
+                               double aspect_ratio,
+                               const Eigen::VectorXd& shape,
+                               const Eigen::VectorXd& expression,
+                               const TrackingOptions& options) {
+  if (total <= 0) return 0.0;
+  const int kept = CountRegion(surviving, region);
+  if (kept == 0) return 0.0;
+  const double support = static_cast<double>(kept) / total;
+  const double rmse =
+      RegionRmse(surviving, region, camera, aspect_ratio, shape, expression);
+  return support * RmseConfidence(rmse, options.confidence_rmse_good,
+                                  options.confidence_rmse_bad);
+}
+
+int AddEyelidGapResiduals(ceres::Problem& problem,
+                          const std::vector<MatchedLandmark>& matches,
+                          double* camera,
+                          double* shape,
+                          double* expression,
+                          int num_shape,
+                          int num_expression,
+                          double aspect_ratio,
+                          double weight,
+                          double huber_delta,
+                          double left_weight_scale = 1.0,
+                          double right_weight_scale = 1.0) {
+  if (weight <= 0.0) return 0;
+  static const std::array<std::pair<const char*, const char*>, 6> kPairs = {{
+      {"left.eye.top.outer_mid", "left.eye.bottom.outer_mid"},
+      {"left.eye.top", "left.eye.bottom"},
+      {"left.eye.top.inner_mid", "left.eye.bottom.inner_mid"},
+      {"right.eye.top.outer_mid", "right.eye.bottom.outer_mid"},
+      {"right.eye.top", "right.eye.bottom"},
+      {"right.eye.top.inner_mid", "right.eye.bottom.inner_mid"},
+  }};
+  const auto find = [&matches](const char* name) -> const MatchedLandmark* {
+    const auto it = std::find_if(
+        matches.begin(), matches.end(),
+        [name](const MatchedLandmark& match) { return match.name == name; });
+    return it == matches.end() ? nullptr : &*it;
+  };
+  int pair_count = 0;
+  for (const auto& [upper_name, lower_name] : kPairs) {
+    const MatchedLandmark* upper = find(upper_name);
+    const MatchedLandmark* lower = find(lower_name);
+    // If either lid is hidden by yaw/Z-buffer filtering, the pair carries no
+    // reliable aperture observation and must not enter the optimization.
+    if (upper == nullptr || lower == nullptr) continue;
+    const double side_scale =
+        RegionOf(upper_name) == LandmarkRegion::kLeftEye ? left_weight_scale
+                                                         : right_weight_scale;
+    const double pair_weight = weight * side_scale;
+    if (pair_weight <= 0.0) continue;
+    auto* cost = new ceres::DynamicAutoDiffCostFunction<EyelidGapResidual, 4>(
+        new EyelidGapResidual(*upper, *lower, aspect_ratio, pair_weight));
+    cost->AddParameterBlock(7);
+    cost->AddParameterBlock(num_shape);
+    cost->AddParameterBlock(num_expression);
+    cost->SetNumResiduals(2);
+    ceres::LossFunction* loss = nullptr;
+    if (huber_delta > 0.0) {
+      loss = new ceres::HuberLoss(huber_delta * std::sqrt(pair_weight));
+    }
+    problem.AddResidualBlock(cost, loss, camera, shape, expression);
+    ++pair_count;
+  }
+  return pair_count;
+}
+
 void AddRegularization(ceres::Problem& problem,
                        double* coefficients,
                        int count,
@@ -623,6 +860,15 @@ bool IsFarSideLandmark(const std::string& name, double yaw,
   return name.rfind(far_side, 0) == 0;
 }
 
+double FarSideEyeConfidence(bool left_eye, double yaw, double soft_yaw,
+                            double full_yaw) {
+  const bool is_far_side = left_eye ? yaw < 0.0 : yaw > 0.0;
+  if (!is_far_side) return 1.0;
+  const double magnitude = std::abs(yaw);
+  if (full_yaw <= soft_yaw) return magnitude < soft_yaw ? 1.0 : 0.0;
+  return std::clamp((full_yaw - magnitude) / (full_yaw - soft_yaw), 0.0, 1.0);
+}
+
 Eigen::VectorXd GenerateVertices(const BfmModel& model,
                                  const Eigen::VectorXd& shape,
                                  const Eigen::VectorXd& expression) {
@@ -714,6 +960,7 @@ FittingResult FitBfmToLandmarks(
       FilterOutliers(semantic_matches, camera, aspect_ratio, shape,
                      expression, options.outlier_threshold,
                      &result.rejected_landmark_count);
+  ApplyEyelidWeights(&semantic_matches, options.eye_weight_multiplier);
 
   // Stage 2 jointly fits camera, identity, and expression using semantic
   // anchors only. The image silhouette is handled separately with dynamic,
@@ -722,6 +969,10 @@ FittingResult FitBfmToLandmarks(
   AddLandmarkResiduals(joint_problem, semantic_matches, options, camera.data(),
                        shape.data(), expression.data(), num_shape,
                        num_expression, aspect_ratio);
+  result.eyelid_gap_pair_count = AddEyelidGapResiduals(
+      joint_problem, semantic_matches, camera.data(), shape.data(),
+      expression.data(), num_shape, num_expression, aspect_ratio,
+      options.eyelid_gap_weight, options.huber_delta);
   ConfigureCameraBounds(joint_problem, camera.data(),
                         minimum_translation_z);
   AddRegularization(joint_problem, shape.data(), num_shape,
@@ -763,6 +1014,8 @@ FittingResult FitBfmToLandmarks(
            ? (std::to_string(result.occluded_landmark_count) +
               " self-occluded landmark(s) removed")
            : "filter not applied (disabled, no topology, or fewer than 6 visible landmarks)") +
+      "\nEyelid gaps: " + std::to_string(result.eyelid_gap_pair_count) +
+      " pair(s)" +
       "\nJoint stage: " + joint_summary.BriefReport();
 
   for (const auto& match : semantic_matches) {
@@ -783,9 +1036,259 @@ FittingResult FitBfmToLandmarks(
   return result;
 }
 
+FittingResult TrackBfmFrame(
+    const BfmModel& model,
+    const std::vector<face_reconstruction::Landmark2D>& landmarks,
+    const std::vector<face_reconstruction::BfmMediaPipeCorrespondence>& correspondences,
+    const FittingResult& identity,
+    const FittingResult& previous,
+    const FittingResult* previous_previous,
+    const TrackingOptions& options) {
+  const int num_shape = static_cast<int>(identity.shape_coefficients.size());
+  const int num_expression =
+      static_cast<int>(identity.expression_coefficients.size());
+  const double aspect_ratio = identity.camera.aspect_ratio;
+
+  FittingResult result;
+  std::vector<MatchedLandmark> matches =
+      BuildMatchedLandmarks(model, landmarks, correspondences, num_shape,
+                            num_expression, options.landmark_weight);
+  if (options.mouth_weight_multiplier > 1.0) {
+    for (auto& match : matches) {
+      if (match.name.find("lips") != std::string::npos ||
+          match.name.find("chin") != std::string::npos) {
+        match.weight *= options.mouth_weight_multiplier;
+      }
+    }
+  }
+  ApplyEyelidWeights(&matches, options.eye_weight_multiplier);
+  // Region support denominators are counted before any filtering, so a
+  // region whose landmarks get rejected loses confidence instead of silently
+  // keeping a high score over the few survivors.
+  const int total_landmark_count = static_cast<int>(matches.size());
+  const int total_left_eye_count =
+      CountRegion(matches, LandmarkRegion::kLeftEye);
+  const int total_right_eye_count =
+      CountRegion(matches, LandmarkRegion::kRightEye);
+  const int total_mouth_count = CountRegion(matches, LandmarkRegion::kMouth);
+
+  // Warm-start pose and expression from the previous frame; identity and
+  // focal length stay frozen for the entire sequence.
+  std::array<double, 7> camera = CameraArray(previous.camera);
+  camera[6] = std::log(identity.camera.focal_length);
+  Eigen::VectorXd shape = identity.shape_coefficients;
+  Eigen::VectorXd expression = previous.expression_coefficients;
+  if (expression.size() != num_expression) {
+    expression = Eigen::VectorXd::Zero(num_expression);
+    const int shared = std::min<int>(
+        num_expression, previous.expression_coefficients.size());
+    expression.head(shared) =
+        previous.expression_coefficients.head(shared);
+  }
+
+  result.initial_rmse =
+      ComputeRmse(matches, camera, aspect_ratio, shape, expression);
+  result.estimated_yaw = CameraYaw(camera);
+  // Before the binary far-side cut at 0.55 engages, fade the far-side eye's
+  // landmark and gap evidence in continuously so growing yaw hands the eye
+  // over to the temporal prior instead of flipping its weight at one frame.
+  double left_eye_weight_scale = 1.0;
+  double right_eye_weight_scale = 1.0;
+  if (options.region_confidence_control) {
+    left_eye_weight_scale = FarSideEyeConfidence(
+        true, result.estimated_yaw, options.eye_confidence_soft_yaw,
+        options.eye_confidence_full_yaw);
+    right_eye_weight_scale = FarSideEyeConfidence(
+        false, result.estimated_yaw, options.eye_confidence_soft_yaw,
+        options.eye_confidence_full_yaw);
+    for (auto& match : matches) {
+      const LandmarkRegion region = RegionOf(match.name);
+      if (region == LandmarkRegion::kLeftEye) {
+        match.weight *= left_eye_weight_scale;
+      } else if (region == LandmarkRegion::kRightEye) {
+        match.weight *= right_eye_weight_scale;
+      }
+    }
+  }
+  matches = FilterLandmarksByPose(matches, result.estimated_yaw, 0.55,
+                                  &result.pose_rejected_landmark_count);
+  if (options.filter_occluded_landmarks) {
+    matches = FilterOccludedLandmarks(
+        model, landmarks, matches, camera, aspect_ratio, shape, expression,
+        options.landmark_visibility_depth_tolerance,
+        &result.occluded_landmark_count, &result.visibility_filter_applied);
+  }
+  matches = FilterOutliers(matches, camera, aspect_ratio, shape, expression,
+                           options.outlier_threshold,
+                           &result.rejected_landmark_count);
+
+  double maximum_mean_z = std::numeric_limits<double>::lowest();
+  for (int vertex = 0; vertex < model.shape().mean.size() / 3; ++vertex) {
+    maximum_mean_z =
+        std::max(maximum_mean_z,
+                 model.shape().mean[3 * vertex + 2] +
+                     model.expression().mean[3 * vertex + 2]);
+  }
+
+  FittingOptions residual_options;
+  residual_options.huber_delta = options.huber_delta;
+  ceres::Problem problem;
+  AddLandmarkResiduals(problem, matches, residual_options, camera.data(),
+                       shape.data(), expression.data(), num_shape,
+                       num_expression, aspect_ratio);
+  result.eyelid_gap_pair_count = AddEyelidGapResiduals(
+      problem, matches, camera.data(), shape.data(), expression.data(),
+      num_shape, num_expression, aspect_ratio, options.eyelid_gap_weight,
+      options.huber_delta, left_eye_weight_scale, right_eye_weight_scale);
+  ConfigureCameraBounds(problem, camera.data(), maximum_mean_z + 10.0);
+  problem.SetParameterBlockConstant(shape.data());
+  problem.SetManifold(camera.data(), new ceres::SubsetManifold(7, {6}));
+  AddRegularization(problem, expression.data(), num_expression,
+                    options.expression_regularization);
+
+  // First-order temporal priors damp the solution toward the previous frame;
+  // with two history frames the same prior instead pulls toward the
+  // constant-velocity extrapolation, penalizing acceleration.
+  const std::array<double, 7> previous_camera = CameraArray(previous.camera);
+  AddReferencePrior(problem, camera.data(), 7,
+                    Eigen::Map<const Eigen::VectorXd>(previous_camera.data(), 7),
+                    options.pose_temporal_weight);
+  AddReferencePrior(problem, expression.data(), num_expression,
+                    previous.expression_coefficients,
+                    options.expression_temporal_weight);
+  if (previous_previous != nullptr &&
+      previous_previous->expression_coefficients.size() ==
+          previous.expression_coefficients.size() &&
+      previous.expression_coefficients.size() == num_expression) {
+    const std::array<double, 7> older_camera =
+        CameraArray(previous_previous->camera);
+    Eigen::VectorXd extrapolated_camera(7);
+    for (int index = 0; index < 7; ++index) {
+      extrapolated_camera[index] =
+          2.0 * previous_camera[index] - older_camera[index];
+    }
+    AddReferencePrior(problem, camera.data(), 7, extrapolated_camera,
+                      options.acceleration_weight);
+    AddReferencePrior(problem, expression.data(), num_expression,
+                      2.0 * previous.expression_coefficients -
+                          previous_previous->expression_coefficients,
+                      options.acceleration_weight);
+  }
+
+  const ceres::Solver::Summary summary =
+      SolveProblem(problem, options.iterations, options.verbose);
+
+  result.final_rmse =
+      ComputeRmse(matches, camera, aspect_ratio, shape, expression);
+
+  // Region confidences at the solution. Always computed and exported so the
+  // downstream reenactment and completion stages can weigh the per-region
+  // driving signal; the control flag only decides whether they also gate the
+  // in-solve weights above and the usability verdict below.
+  const double solved_yaw = CameraYaw(camera);
+  result.confidences.left_eye =
+      RegionSupportConfidence(matches, LandmarkRegion::kLeftEye,
+                              total_left_eye_count, camera, aspect_ratio,
+                              shape, expression, options) *
+      FarSideEyeConfidence(true, solved_yaw, options.eye_confidence_soft_yaw,
+                           options.eye_confidence_full_yaw);
+  result.confidences.right_eye =
+      RegionSupportConfidence(matches, LandmarkRegion::kRightEye,
+                              total_right_eye_count, camera, aspect_ratio,
+                              shape, expression, options) *
+      FarSideEyeConfidence(false, solved_yaw, options.eye_confidence_soft_yaw,
+                           options.eye_confidence_full_yaw);
+  result.confidences.mouth = RegionSupportConfidence(
+      matches, LandmarkRegion::kMouth, total_mouth_count, camera,
+      aspect_ratio, shape, expression, options);
+  const double pose_support =
+      total_landmark_count > 0
+          ? static_cast<double>(matches.size()) / total_landmark_count
+          : 0.0;
+  result.confidences.pose =
+      pose_support * RmseConfidence(result.final_rmse,
+                                    options.confidence_rmse_good,
+                                    options.confidence_rmse_bad);
+
+  result.usable = summary.IsSolutionUsable() &&
+                  std::isfinite(result.final_rmse) &&
+                  result.final_rmse <= options.failure_rmse &&
+                  (!options.region_confidence_control ||
+                   result.confidences.pose >= options.min_pose_confidence);
+  result.camera = CameraParametersFromArray(camera, aspect_ratio);
+  result.shape_coefficients = shape;
+  result.expression_coefficients = expression;
+  result.vertices = GenerateVertices(model, shape, expression);
+  result.semantic_landmark_count = static_cast<int>(matches.size());
+  result.solver_summary =
+      "Eyelid gaps: " + std::to_string(result.eyelid_gap_pair_count) +
+      " pair(s)\n" + summary.BriefReport();
+
+  for (const auto& match : matches) {
+    const Eigen::Vector3d point =
+        match.mean + match.shape_basis * shape +
+        match.expression_basis * expression;
+    LandmarkReprojection reprojection;
+    reprojection.name = match.name;
+    reprojection.mediapipe_index = match.mediapipe_index;
+    reprojection.bfm_vertex_id = match.bfm_vertex_id;
+    reprojection.observed = match.target;
+    reprojection.projected = ProjectPoint(point, camera, aspect_ratio);
+    reprojection.weight_multiplier =
+        match.weight / std::max(options.landmark_weight, 1.0e-12);
+    result.reprojections.push_back(std::move(reprojection));
+  }
+  return result;
+}
+
 Eigen::Vector2d ProjectVertex(const Eigen::Vector3d& vertex,
                               const CameraParameters& camera) {
   return ProjectPoint(vertex, CameraArray(camera), camera.aspect_ratio);
+}
+
+CameraParameters TransferRelativeCameraPose(
+    const CameraParameters& target_reference,
+    const CameraParameters& source_reference,
+    const CameraParameters& source_current,
+    double scale) {
+  if (!std::isfinite(scale) || scale < 0.0) {
+    throw std::invalid_argument("Pose transfer scale must be finite and non-negative");
+  }
+  const auto rotation = [](const Eigen::Vector3d& angle_axis)
+      -> Eigen::Matrix3d {
+    const double angle = angle_axis.norm();
+    if (angle <= 1.0e-12) return Eigen::Matrix3d::Identity();
+    return Eigen::AngleAxisd(angle, angle_axis / angle).toRotationMatrix();
+  };
+  const Eigen::Matrix3d source_delta =
+      rotation(source_current.angle_axis) *
+      rotation(source_reference.angle_axis).transpose();
+  const Eigen::AngleAxisd delta_angle_axis(source_delta);
+  const Eigen::Matrix3d scaled_delta =
+      Eigen::AngleAxisd(scale * delta_angle_axis.angle(),
+                        delta_angle_axis.axis())
+          .toRotationMatrix();
+  const Eigen::Matrix3d target_rotation =
+      scaled_delta * rotation(target_reference.angle_axis);
+  const Eigen::AngleAxisd target_angle_axis(target_rotation);
+
+  CameraParameters result = target_reference;
+  result.angle_axis =
+      target_angle_axis.axis() * target_angle_axis.angle();
+  const double source_depth =
+      std::max(source_reference.translation.z(), 1.0e-6);
+  const double translation_scale =
+      target_reference.translation.z() / source_depth;
+  result.translation.x() +=
+      scale * translation_scale *
+      (source_current.translation.x() - source_reference.translation.x());
+  result.translation.y() +=
+      scale * translation_scale *
+      (source_current.translation.y() - source_reference.translation.y());
+  const double depth_ratio =
+      std::max(source_current.translation.z(), 1.0e-6) / source_depth;
+  result.translation.z() *= std::pow(depth_ratio, scale);
+  return result;
 }
 
 Eigen::VectorXd ApplyCameraRotation(const Eigen::VectorXd& vertices,

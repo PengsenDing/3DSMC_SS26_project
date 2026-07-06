@@ -5,6 +5,7 @@
 #include <ceres/rotation.h>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <cmath>
 #include <iostream>
@@ -13,6 +14,12 @@
 #include <vector>
 
 namespace {
+
+Eigen::Matrix3d Rotation(const Eigen::Vector3d& angle_axis) {
+  const double angle = angle_axis.norm();
+  if (angle <= 1.0e-12) return Eigen::Matrix3d::Identity();
+  return Eigen::AngleAxisd(angle, angle_axis / angle).toRotationMatrix();
+}
 
 Eigen::Vector2d Project(const Eigen::Vector3d& point,
                         const Eigen::Vector3d& angle_axis,
@@ -37,6 +44,58 @@ int main() {
       face_recon::IsFarSideLandmark("center.nose.tip", 0.8, 0.55) ||
       face_recon::IsFarSideLandmark("right.eye.corner_outer", 0.3, 0.55)) {
     std::cerr << "Pose-aware landmark classification failed\n";
+    return 1;
+  }
+
+  constexpr double kSoftYaw = 0.35;
+  constexpr double kFullYaw = 0.70;
+  if (face_recon::FarSideEyeConfidence(true, 0.5, kSoftYaw, kFullYaw) != 1.0 ||
+      face_recon::FarSideEyeConfidence(false, -0.5, kSoftYaw, kFullYaw) !=
+          1.0 ||
+      face_recon::FarSideEyeConfidence(false, 0.2, kSoftYaw, kFullYaw) !=
+          1.0 ||
+      std::abs(face_recon::FarSideEyeConfidence(false, 0.525, kSoftYaw,
+                                                kFullYaw) -
+               0.5) > 1.0e-12 ||
+      std::abs(face_recon::FarSideEyeConfidence(true, -0.525, kSoftYaw,
+                                                kFullYaw) -
+               0.5) > 1.0e-12 ||
+      face_recon::FarSideEyeConfidence(true, -0.9, kSoftYaw, kFullYaw) !=
+          0.0) {
+    std::cerr << "Far-side eye confidence ramp failed\n";
+    return 1;
+  }
+
+  face_recon::CameraParameters target_camera;
+  target_camera.angle_axis = Eigen::Vector3d(0.1, 0.0, 0.0);
+  target_camera.translation = Eigen::Vector3d(10.0, 20.0, 200.0);
+  target_camera.focal_length = 1.4;
+  target_camera.aspect_ratio = 0.75;
+  face_recon::CameraParameters source_reference;
+  source_reference.translation = Eigen::Vector3d(1.0, 2.0, 100.0);
+  face_recon::CameraParameters source_current = source_reference;
+  source_current.angle_axis = Eigen::Vector3d(0.0, 0.0, 0.2);
+  source_current.translation = Eigen::Vector3d(3.0, 1.0, 110.0);
+  const face_recon::CameraParameters transferred =
+      face_recon::TransferRelativeCameraPose(
+          target_camera, source_reference, source_current);
+  const Eigen::Matrix3d expected_rotation =
+      Rotation(source_current.angle_axis) * Rotation(target_camera.angle_axis);
+  if (!Rotation(transferred.angle_axis).isApprox(expected_rotation, 1.0e-10) ||
+      !transferred.translation.isApprox(Eigen::Vector3d(14.0, 18.0, 220.0),
+                                        1.0e-10) ||
+      transferred.focal_length != target_camera.focal_length ||
+      transferred.aspect_ratio != target_camera.aspect_ratio) {
+    std::cerr << "Relative camera-pose transfer failed\n";
+    return 1;
+  }
+  const face_recon::CameraParameters zero_scale =
+      face_recon::TransferRelativeCameraPose(
+          target_camera, source_reference, source_current, 0.0);
+  if (!Rotation(zero_scale.angle_axis)
+           .isApprox(Rotation(target_camera.angle_axis), 1.0e-10) ||
+      !zero_scale.translation.isApprox(target_camera.translation, 1.0e-10)) {
+    std::cerr << "Zero pose scale did not preserve the target camera\n";
     return 1;
   }
 
@@ -135,6 +194,26 @@ int main() {
       result.mask_corrected_landmark_count != 0 ||
       result.reprojections.size() != correspondences.size()) {
     std::cerr << result.solver_summary << "\n";
+    return 1;
+  }
+
+  // Tracking the same landmarks from the fitted identity must stay usable
+  // with high pose confidence, while regions without any correspondences
+  // (the synthetic names carry no eye/mouth landmarks) report zero.
+  face_recon::TrackingOptions tracking;
+  tracking.filter_occluded_landmarks = false;  // No triangles to rasterize.
+  const face_recon::FittingResult tracked = face_recon::TrackBfmFrame(
+      model, landmarks, correspondences, result, result, nullptr, tracking);
+  if (!tracked.usable || tracked.confidences.pose < 0.9 ||
+      tracked.confidences.left_eye != 0.0 ||
+      tracked.confidences.right_eye != 0.0 ||
+      tracked.confidences.mouth != 0.0) {
+    std::cerr << "Region confidence tracking failed: pose="
+              << tracked.confidences.pose
+              << " left_eye=" << tracked.confidences.left_eye
+              << " right_eye=" << tracked.confidences.right_eye
+              << " mouth=" << tracked.confidences.mouth << "\n"
+              << tracked.solver_summary << "\n";
     return 1;
   }
   return 0;
