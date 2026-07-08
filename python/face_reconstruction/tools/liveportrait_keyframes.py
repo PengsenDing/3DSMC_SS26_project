@@ -15,7 +15,7 @@ camera, never the nominal request. Requests up to +-40 still produce clean,
 identity-preserving views.
 
 Usage:
-  <liveportrait>/.venv/bin/python scripts/liveportrait_keyframes.py \
+  <liveportrait>/.venv/bin/python python/face_reconstruction/tools/liveportrait_keyframes.py \
       photo.png --liveportrait-root <liveportrait> --output keyframes/
 """
 

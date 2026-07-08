@@ -93,14 +93,18 @@ def main() -> int:
     transfer = args.transfer.expanduser().resolve()
     metadata_path = transfer / "transfer.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[3]
     target_fitting = (
         args.target_fitting.expanduser().resolve()
         if args.target_fitting
         else Path(metadata["target_reconstruction"]) / "fitting.txt"
     )
     frames_dir = args.frames_dir.expanduser().resolve() if args.frames_dir else transfer / "frames"
-    model = args.model.expanduser().resolve() if args.model else root / "data/model2019_face12.h5"
+    model = (
+        args.model.expanduser().resolve()
+        if args.model
+        else root / "assets" / "models" / "model2019_face12.h5"
+    )
     correspondences = (
         args.correspondences.expanduser().resolve()
         if args.correspondences

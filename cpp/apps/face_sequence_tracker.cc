@@ -139,7 +139,7 @@ face_recon::FittingResult LoadInitialFit(const std::string& path,
 
 int main(int argc, char** argv) {
   CLI::App app{"Track fixed BFM identity through an image sequence"};
-  std::string model_path = "data/model2019_face12.h5";
+  std::string model_path = "assets/models/model2019_face12.h5";
   std::string correspondence_path = "data/bfm_mediapipe_correspondence.csv";
   std::string manifest_path;
   std::string initial_fit_path;

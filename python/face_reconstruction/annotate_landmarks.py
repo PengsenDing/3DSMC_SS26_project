@@ -5,7 +5,7 @@ BFM fit's reprojections (red, hollow) on every frame, with magnified eye
 insets and per-frame eyelid gap readouts to diagnose eye-motion tracking.
 
 Usage:
-    python scripts/annotate_landmarks.py sequences/talking_3
+    python -m face_reconstruction.annotate_landmarks outputs/sequences/talking_3
 """
 
 import argparse
@@ -133,8 +133,9 @@ def main():
     args = parser.parse_args()
 
     seq = args.sequence.rstrip("/")
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_path = args.model or os.path.join(repo, "data/model2019_face12.h5")
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    model_path = args.model or os.path.join(
+        repo, "assets/models/model2019_face12.h5")
     corr_path = args.correspondences or os.path.join(
         repo, "data/bfm_mediapipe_correspondence.csv")
     output = args.output or os.path.join(seq, "landmark_annotated.mp4")

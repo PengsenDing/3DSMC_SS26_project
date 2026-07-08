@@ -12,7 +12,8 @@ FACE_SKIN_CLASS = 3
 # (hands/arms), clothes, and accessories ("others").
 OCCLUDER_CLASSES = (1, 2, 4, 5)
 DEFAULT_MODEL = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
+    / "assets"
     / "models"
     / "selfie_multiclass_256x256.tflite"
 )

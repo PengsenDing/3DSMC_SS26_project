@@ -11,9 +11,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.detect_landmarks import run_detection
+ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
-ROOT = Path(__file__).resolve().parent
+from face_reconstruction.detect_landmarks import run_detection
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,8 +24,14 @@ def parse_args() -> argparse.Namespace:
         description="Reconstruct the first frame, then track fixed identity through a sequence."
     )
     parser.add_argument("input", type=Path, help="Video file or directory of ordered images")
-    parser.add_argument("--output", type=Path, default=ROOT / "sequences" / "tracking")
-    parser.add_argument("--model", type=Path, default=ROOT / "data" / "model2019_face12.h5")
+    parser.add_argument(
+        "--output", type=Path, default=ROOT / "outputs" / "sequences" / "tracking"
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=ROOT / "assets" / "models" / "model2019_face12.h5",
+    )
     parser.add_argument(
         "--correspondences",
         type=Path,
@@ -207,7 +216,7 @@ def main() -> int:
     else:
         reconstruction = [
             sys.executable,
-            str(ROOT / "reconstruct.py"),
+            str(ROOT / "apps" / "reconstruct.py"),
             str(frames[0]),
             "--name", initial_name,
             "--output-root", str(output),

@@ -12,12 +12,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scripts.detect_landmarks import run_detection
-from scripts.segment_face import DEFAULT_MODEL as DEFAULT_SEGMENTATION_MODEL
-from scripts.segment_face import MODEL_URL as SEGMENTATION_MODEL_URL
-from scripts.segment_face import segment_face_skin
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+from face_reconstruction.detect_landmarks import run_detection
+from face_reconstruction.segment_face import DEFAULT_MODEL as DEFAULT_SEGMENTATION_MODEL
+from face_reconstruction.segment_face import MODEL_URL as SEGMENTATION_MODEL_URL
+from face_reconstruction.segment_face import segment_face_skin
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,13 +38,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=PROJECT_ROOT / "reconstructions",
+        default=PROJECT_ROOT / "outputs" / "reconstructions",
         help="Parent directory for reconstruction runs",
     )
     parser.add_argument(
         "--model",
         type=Path,
-        default=PROJECT_ROOT / "data" / "model2019_face12.h5",
+        default=PROJECT_ROOT / "assets" / "models" / "model2019_face12.h5",
         help="Basel Face Model HDF5 file",
     )
     parser.add_argument(

@@ -13,14 +13,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = PROJECT_ROOT / ".cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(CACHE_DIR / "matplotlib"))
 os.environ.setdefault("XDG_CACHE_HOME", str(CACHE_DIR))
 
 DEFAULT_BFM_CORRESPONDENCES = PROJECT_ROOT / "data" / "bfm_mediapipe_correspondence.csv"
-DEFAULT_DEBUG_DIRECTORY = PROJECT_ROOT / "reconstructions" / "_landmark_debug"
+DEFAULT_DEBUG_DIRECTORY = (
+    PROJECT_ROOT / "outputs" / "reconstructions" / "_landmark_debug"
+)
 
 # Ordered MediaPipe FACEMESH_FACE_OVAL vertices. They are rasterized into one
 # silhouette observation; they are never exported as sparse BFM constraints.

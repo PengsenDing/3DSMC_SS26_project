@@ -71,8 +71,14 @@ Desktop.ini
 # -----------------------------------------------------------------------------
 /libs/
 
-/models/*
-!/models/.gitkeep
+# New local asset layout.
+/assets/inputs/*
+!/assets/inputs/.gitkeep
+/assets/models/*
+!/assets/models/.gitkeep
+
+# Legacy local asset directories kept ignored for existing worktrees.
+/models/
 
 # Downloaded datasets and licensed model containers are local. Keep only the
 # small BFM/MediaPipe correspondence table in data/ tracked.
@@ -84,22 +90,27 @@ Desktop.ini
 # Local input images
 # -----------------------------------------------------------------------------
 /inputs/*
-!/inputs/.gitkeep
 
 # -----------------------------------------------------------------------------
 # Generated reconstruction and rendering output
 # -----------------------------------------------------------------------------
-/outputs/
+/outputs/reconstructions/*
+!/outputs/reconstructions/.gitkeep
+/outputs/sequences/*
+!/outputs/sequences/.gitkeep
+/outputs/transfers/*
+!/outputs/transfers/.gitkeep
+/outputs/evaluations/*
+!/outputs/evaluations/.gitkeep
+/outputs/results/
 /results/
 
-/reconstructions/*
-!/reconstructions/.gitkeep
+# Legacy output directories kept ignored for existing worktrees.
+/reconstructions/
 
-/sequences/*
-!/sequences/.gitkeep
+/sequences/
 
-/transfers/*
-!/transfers/.gitkeep
+/transfers/
 
 /evaluations/*
 !/evaluations/.gitkeep

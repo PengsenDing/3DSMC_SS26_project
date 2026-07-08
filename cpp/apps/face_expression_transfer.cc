@@ -1380,7 +1380,7 @@ bool SaveGeometryConditions(
 
 int main(int argc, char** argv) {
   CLI::App app{"Transfer tracked video expressions onto a reconstructed photo"};
-  std::string model_path = "data/model2019_face12.h5";
+  std::string model_path = "assets/models/model2019_face12.h5";
   std::string target_fitting_path;
   std::string target_mesh_path;
   std::string target_image_path;

@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,8 +36,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Source video/image directory, or an existing tracking directory",
     )
-    parser.add_argument("--output", type=Path, default=ROOT / "transfers" / "transfer")
-    parser.add_argument("--model", type=Path, default=ROOT / "data" / "model2019_face12.h5")
+    parser.add_argument(
+        "--output", type=Path, default=ROOT / "outputs" / "transfers" / "transfer"
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=ROOT / "assets" / "models" / "model2019_face12.h5",
+    )
     parser.add_argument(
         "--correspondences",
         type=Path,
@@ -200,7 +206,7 @@ def reconstruct_target(target: Path, output: Path, args: argparse.Namespace) -> 
     run(
         [
             sys.executable,
-            str(ROOT / "reconstruct.py"),
+            str(ROOT / "apps" / "reconstruct.py"),
             str(target),
             "--name", run_directory.name,
             "--output-root", str(output),
@@ -219,7 +225,7 @@ def track_source(source: Path, output: Path, args: argparse.Namespace) -> Path:
     tracking_dir = output / "source_tracking"
     command = [
         sys.executable,
-        str(ROOT / "track_sequence.py"),
+        str(ROOT / "apps" / "track_sequence.py"),
         str(source),
         "--output", str(tracking_dir),
         "--model", str(args.model),
@@ -425,7 +431,13 @@ def main() -> int:
         run(
             [
                 sys.executable,
-                str(ROOT / "scripts" / "annotate_transfer_landmarks.py"),
+                str(
+                    ROOT
+                    / "python"
+                    / "face_reconstruction"
+                    / "tools"
+                    / "annotate_transfer_landmarks.py"
+                ),
                 str(output),
                 "--target-fitting", str(reconstruction / "fitting.txt"),
                 "--frames-dir", str(encoded_frames[0].parent),
