@@ -14,11 +14,14 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/photo.hpp>
+#include <opencv2/stitching/detail/seam_finders.hpp>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +30,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -487,24 +491,22 @@ cv::Mat BuildCleanBackground(
 
 // Renders the re-expressed mesh over the photograph. The synthetic face is
 // blended with a feathered alpha mask so the transition into the original
-// image has no hard silhouette seam.
-cv::Mat CompositeFrame(const cv::Mat& background,
-                       const cv::Mat& target_texture,
-                       const Eigen::VectorXd& texture_uv,
-                       const Eigen::MatrixXi& triangles,
-                       const face_recon::RasterizationResult& rasterization,
-                       const Eigen::VectorXd& vertex_colors,
-                       bool use_projective_texture,
-                       int feather) {
+// image has no hard silhouette seam. `pixel_color` decides where each
+// rasterized surface point's color comes from (single-photo projective
+// texture, fitted vertex colors, or a multi-view keyframe blend).
+cv::Mat CompositeFrame(
+    const cv::Mat& background,
+    const std::function<cv::Vec3b(const face_recon::RasterPixel&)>&
+        pixel_color,
+    const face_recon::RasterizationResult& rasterization,
+    int feather) {
   cv::Mat rendered = background.clone();
   cv::Mat mask(background.rows, background.cols, CV_8UC1, cv::Scalar(0));
   for (int y = 0; y < rasterization.height; ++y) {
     for (int x = 0; x < rasterization.width; ++x) {
       const face_recon::RasterPixel& pixel = rasterization.at(x, y);
       if (!pixel.visible()) continue;
-      rendered.at<cv::Vec3b>(y, x) = use_projective_texture
-          ? ProjectivePixelColor(target_texture, texture_uv, triangles, pixel)
-          : ToBgr8(PixelColor(vertex_colors, triangles, pixel));
+      rendered.at<cv::Vec3b>(y, x) = pixel_color(pixel);
       mask.at<unsigned char>(y, x) = 255;
     }
   }
@@ -708,14 +710,597 @@ cv::Mat WarpHeadBackground(
   return warped;
 }
 
+// One registered texture keyframe: a synthesized (or captured) view of the
+// target at a known head pose. `image` keeps the intact face for projective
+// texture sampling; `background` is the feature-erased inpainted variant
+// used behind the rendered mesh. Registration comes from the sequence
+// tracker run on the keyframes with the target's identity held fixed, so the
+// camera here is the *fitted* pose — never the nominal angle the generator
+// was asked for (LivePortrait damps rotations nonlinearly).
+struct TextureKeyframe {
+  cv::Mat image;
+  cv::Mat background;
+  face_recon::CameraParameters camera;
+  Eigen::VectorXd vertices;
+  face_recon::RasterizationResult rasterization;
+  cv::Mat boundary_distance;
+  std::vector<double> triangle_angle;
+  std::vector<double> triangle_resolution;
+  double yaw = 0.0;
+  double pitch = 0.0;
+};
+
+struct CanonicalTextureBank {
+  cv::Mat atlas;
+  cv::Mat valid_mask;
+  Eigen::VectorXd vertex_uv;
+};
+
+Eigen::Matrix3d CameraRotation(const face_recon::CameraParameters& camera) {
+  const double angle = camera.angle_axis.norm();
+  return angle <= 1.0e-12
+             ? Eigen::Matrix3d::Identity()
+             : Eigen::AngleAxisd(angle, camera.angle_axis / angle)
+                   .toRotationMatrix();
+}
+
+double CameraYawAngle(const face_recon::CameraParameters& camera) {
+  const Eigen::Matrix3d rotation = CameraRotation(camera);
+  return std::atan2(rotation(0, 2), rotation(2, 2));
+}
+
+double CameraPitchAngle(const face_recon::CameraParameters& camera) {
+  const Eigen::Matrix3d rotation = CameraRotation(camera);
+  return std::atan2(-rotation(1, 2),
+                    std::hypot(rotation(0, 2), rotation(2, 2)));
+}
+
+Eigen::Vector3d SurfacePoint(const Eigen::VectorXd& vertices,
+                             const Eigen::MatrixXi& triangles,
+                             int triangle,
+                             const Eigen::Vector3f& barycentric) {
+  Eigen::Vector3d point = Eigen::Vector3d::Zero();
+  for (int corner = 0; corner < 3; ++corner) {
+    point += static_cast<double>(barycentric[corner]) *
+             vertices.segment<3>(3 * TriangleIndex(triangles, triangle,
+                                                    corner));
+  }
+  return point;
+}
+
+// Project a corresponding surface sample into a source view.  The returned
+// depth uses the same inverse-optical-depth convention as RasterizeMesh.
+bool ProjectSurfacePoint(const Eigen::Vector3d& point,
+                         const face_recon::CameraParameters& camera,
+                         int width, int height, cv::Point2d* pixel,
+                         double* inverse_depth) {
+  const Eigen::Vector3d rotated = CameraRotation(camera) * point;
+  const double optical_depth = camera.translation.z() - rotated.z();
+  if (optical_depth <= 1.0e-6) return false;
+  *inverse_depth = 1.0 / optical_depth;
+  pixel->x = (0.5 + camera.focal_length *
+                       (rotated.x() + camera.translation.x()) /
+                       optical_depth) *
+             (width - 1);
+  pixel->y = (0.5 - camera.focal_length * camera.aspect_ratio *
+                       (rotated.y() + camera.translation.y()) /
+                       optical_depth) *
+             (height - 1);
+  return pixel->x >= 0.0 && pixel->x <= width - 1.0 && pixel->y >= 0.0 &&
+         pixel->y <= height - 1.0;
+}
+
+double SampleFloatBilinear(const cv::Mat& image, double x, double y) {
+  x = std::clamp(x, 0.0, static_cast<double>(image.cols - 1));
+  y = std::clamp(y, 0.0, static_cast<double>(image.rows - 1));
+  const int x0 = static_cast<int>(std::floor(x));
+  const int y0 = static_cast<int>(std::floor(y));
+  const int x1 = std::min(x0 + 1, image.cols - 1);
+  const int y1 = std::min(y0 + 1, image.rows - 1);
+  const double wx = x - x0;
+  const double wy = y - y0;
+  return (1.0 - wy) * ((1.0 - wx) * image.at<float>(y0, x0) +
+                       wx * image.at<float>(y0, x1)) +
+         wy * ((1.0 - wx) * image.at<float>(y1, x0) +
+               wx * image.at<float>(y1, x1));
+}
+
+bool IsSurfacePointVisible(const TextureKeyframe& keyframe,
+                           const Eigen::Vector3d& point,
+                           cv::Point2d* source_pixel) {
+  double inverse_depth = 0.0;
+  if (!ProjectSurfacePoint(point, keyframe.camera, keyframe.image.cols,
+                           keyframe.image.rows, source_pixel,
+                           &inverse_depth)) {
+    return false;
+  }
+  const int x = std::clamp(static_cast<int>(std::lround(source_pixel->x)), 0,
+                           keyframe.rasterization.width - 1);
+  const int y = std::clamp(static_cast<int>(std::lround(source_pixel->y)), 0,
+                           keyframe.rasterization.height - 1);
+  // A relative tolerance is stable across camera distance.  This is the
+  // VDTM/ULR visibility test: every surface sample, not merely its triangle
+  // vertices, must agree with the source-view Z-buffer.
+  constexpr double kRelativeDepthTolerance = 2.0e-3;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      const int sx = x + dx;
+      const int sy = y + dy;
+      if (sx < 0 || sy < 0 || sx >= keyframe.rasterization.width ||
+          sy >= keyframe.rasterization.height) {
+        continue;
+      }
+      const auto& z = keyframe.rasterization.at(sx, sy);
+      if (z.visible() &&
+          std::abs(inverse_depth - z.depth) <=
+              kRelativeDepthTolerance * std::max(inverse_depth, 1.0e-6)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void BuildKeyframeQuality(TextureKeyframe* keyframe,
+                          const Eigen::MatrixXi& triangles) {
+  cv::Mat mask(keyframe->image.rows, keyframe->image.cols, CV_8UC1,
+               cv::Scalar(0));
+  for (int y = 0; y < keyframe->rasterization.height; ++y) {
+    for (int x = 0; x < keyframe->rasterization.width; ++x) {
+      if (keyframe->rasterization.at(x, y).visible()) {
+        mask.at<unsigned char>(y, x) = 255;
+      }
+    }
+  }
+  cv::distanceTransform(mask, keyframe->boundary_distance, cv::DIST_L2, 3);
+
+  const int triangle_count = triangles.cols() == 3 ? triangles.rows()
+                                                    : triangles.cols();
+  keyframe->triangle_angle.assign(triangle_count, 0.0);
+  keyframe->triangle_resolution.assign(triangle_count, 0.0);
+  std::vector<double> raw_resolution(triangle_count, 0.0);
+  for (int triangle = 0; triangle < triangle_count; ++triangle) {
+    const int i0 = TriangleIndex(triangles, triangle, 0);
+    const int i1 = TriangleIndex(triangles, triangle, 1);
+    const int i2 = TriangleIndex(triangles, triangle, 2);
+    const Eigen::Vector3d a = keyframe->vertices.segment<3>(3 * i0);
+    const Eigen::Vector3d b = keyframe->vertices.segment<3>(3 * i1);
+    const Eigen::Vector3d c = keyframe->vertices.segment<3>(3 * i2);
+    Eigen::Vector3d normal = (b - a).cross(c - a);
+    const double surface_area2 = normal.norm();
+    if (surface_area2 <= 1.0e-12) continue;
+    normal /= surface_area2;
+    const Eigen::Vector3d center = (a + b + c) / 3.0;
+    const Eigen::Vector3d center_camera =
+        CameraRotation(keyframe->camera) * center;
+    const Eigen::Vector3d to_camera(
+        -(center_camera.x() + keyframe->camera.translation.x()),
+        -(center_camera.y() + keyframe->camera.translation.y()),
+        keyframe->camera.translation.z() - center_camera.z());
+    const Eigen::Vector3d normal_camera =
+        CameraRotation(keyframe->camera) * normal;
+    keyframe->triangle_angle[triangle] =
+        std::max(0.0, std::abs(normal_camera.dot(to_camera.normalized())));
+    const auto& p0 = keyframe->rasterization.projected_vertices[i0].pixel;
+    const auto& p1 = keyframe->rasterization.projected_vertices[i1].pixel;
+    const auto& p2 = keyframe->rasterization.projected_vertices[i2].pixel;
+    const double image_area2 =
+        std::abs((p1.x() - p0.x()) * (p2.y() - p0.y()) -
+                 (p1.y() - p0.y()) * (p2.x() - p0.x()));
+    raw_resolution[triangle] = std::sqrt(image_area2 / surface_area2);
+  }
+  std::vector<double> positive;
+  for (double value : raw_resolution) {
+    if (value > 0.0 && std::isfinite(value)) positive.push_back(value);
+  }
+  if (!positive.empty()) {
+    std::nth_element(positive.begin(),
+                     positive.begin() + positive.size() / 2,
+                     positive.end());
+  }
+  const double median = positive.empty() ? 1.0
+                                         : positive[positive.size() / 2];
+  for (int triangle = 0; triangle < triangle_count; ++triangle) {
+    keyframe->triangle_resolution[triangle] =
+        std::clamp(raw_resolution[triangle] / std::max(median, 1.0e-9),
+                   0.0, 2.0);
+  }
+}
+
+std::vector<TextureKeyframe> LoadTextureKeyframes(
+    const std::string& manifest_path, const std::string& trajectory_path,
+    const face_recon::BfmModel& model, const face_recon::FittingResult& target,
+    int width, int height) {
+  std::unordered_map<int, std::string> image_by_frame;
+  {
+    std::ifstream input(manifest_path);
+    if (!input) {
+      throw std::runtime_error("Could not open keyframe manifest: " +
+                               manifest_path);
+    }
+    std::string line;
+    bool first = true;
+    while (std::getline(input, line)) {
+      if (line.empty()) continue;
+      if (first) {
+        first = false;
+        if (line.rfind("frame,", 0) == 0) continue;
+      }
+      std::vector<std::string> fields;
+      std::istringstream row(line);
+      std::string field;
+      while (std::getline(row, field, ',')) {
+        if (!field.empty() && field.back() == '\r') field.pop_back();
+        fields.push_back(field);
+      }
+      if (fields.size() < 2) {
+        throw std::runtime_error("Keyframe manifest rows require frame,image");
+      }
+      std::filesystem::path image_path(fields[1]);
+      if (image_path.is_relative()) {
+        image_path = std::filesystem::path(manifest_path).parent_path() /
+                     image_path;
+      }
+      image_by_frame[std::stoi(fields[0])] =
+          image_path.lexically_normal().string();
+    }
+  }
+
+  std::vector<TextureKeyframe> keyframes;
+  for (const TrajectoryFrame& frame : LoadTrajectory(trajectory_path)) {
+    if (!frame.has_pose) {
+      throw std::runtime_error(
+          "Keyframe trajectory has no camera columns: " + trajectory_path);
+    }
+    const auto image_it = image_by_frame.find(frame.index);
+    if (image_it == image_by_frame.end()) {
+      throw std::runtime_error("Keyframe manifest is missing frame " +
+                               std::to_string(frame.index));
+    }
+    TextureKeyframe keyframe;
+    keyframe.image = cv::imread(image_it->second, cv::IMREAD_COLOR);
+    if (keyframe.image.empty()) {
+      throw std::runtime_error("Could not read keyframe image: " +
+                               image_it->second);
+    }
+    if (keyframe.image.cols != width || keyframe.image.rows != height) {
+      throw std::runtime_error(
+          "Keyframe image dimensions must match the target photograph: " +
+          image_it->second);
+    }
+    keyframe.camera = frame.camera;
+    // tracking.csv stores neither aspect ratio nor the reference camera's
+    // conventions, so inherit them from the target fit the registration was
+    // initialized with.
+    keyframe.camera.aspect_ratio = target.camera.aspect_ratio;
+    keyframe.vertices = face_recon::GenerateVertices(
+        model, target.shape_coefficients, frame.expression);
+    keyframe.rasterization = face_recon::RasterizeMesh(
+        keyframe.vertices, model.triangles(), keyframe.camera, width, height);
+    BuildKeyframeQuality(&keyframe, model.triangles());
+    keyframe.background =
+        BuildCleanBackground(keyframe.image, keyframe.vertices,
+                             keyframe.camera);
+    keyframe.yaw = CameraYawAngle(keyframe.camera);
+    keyframe.pitch = CameraPitchAngle(keyframe.camera);
+    keyframes.push_back(std::move(keyframe));
+  }
+  if (keyframes.empty()) {
+    throw std::runtime_error("Keyframe trajectory holds no frames: " +
+                             trajectory_path);
+  }
+  return keyframes;
+}
+
+// Pose-proximity weights in the fitted yaw/pitch plane.  Keeping up to four
+// neighbors naturally supports a rectangular yaw x pitch keyframe grid.
+std::vector<double> KeyframeWeights(
+    const std::vector<TextureKeyframe>& keyframes,
+    const face_recon::CameraParameters& camera,
+    double smoothing_radians) {
+  std::vector<double> weights(keyframes.size(), 0.0);
+  std::vector<std::size_t> order(keyframes.size());
+  for (std::size_t index = 0; index < keyframes.size(); ++index) {
+    order[index] = index;
+  }
+  std::sort(order.begin(), order.end(),
+            [&](std::size_t a, std::size_t b) {
+              const double yaw = CameraYawAngle(camera);
+              const double pitch = CameraPitchAngle(camera);
+              return std::hypot(keyframes[a].yaw - yaw,
+                                keyframes[a].pitch - pitch) <
+                     std::hypot(keyframes[b].yaw - yaw,
+                                keyframes[b].pitch - pitch);
+            });
+  const std::size_t active = std::min<std::size_t>(4, keyframes.size());
+  const double yaw = CameraYawAngle(camera);
+  const double pitch = CameraPitchAngle(camera);
+  double total = 0.0;
+  for (std::size_t rank = 0; rank < active; ++rank) {
+    const std::size_t index = order[rank];
+    const double distance =
+        std::hypot(keyframes[index].yaw - yaw,
+                   keyframes[index].pitch - pitch) + smoothing_radians;
+    weights[index] = 1.0 / (distance * distance);
+    total += weights[index];
+  }
+  for (double& weight : weights) weight /= total;
+  return weights;
+}
+
+double SourceSampleWeight(const TextureKeyframe& keyframe,
+                          double pose_weight, int triangle,
+                          const cv::Point2d& source_pixel,
+                          double boundary_scale) {
+  const double angle = keyframe.triangle_angle[triangle];
+  const double resolution = keyframe.triangle_resolution[triangle];
+  const double boundary = std::clamp(
+      SampleFloatBilinear(keyframe.boundary_distance, source_pixel.x,
+                          source_pixel.y) /
+          std::max(boundary_scale, 1.0),
+      0.0, 1.0);
+  // Grazing views are suppressed quadratically; resolution saturates so a
+  // single close-up cannot monopolize the bank.  The boundary term removes
+  // unstable samples near silhouettes and self-occlusion edges.
+  return pose_weight * angle * angle * std::sqrt(resolution) * boundary;
+}
+
+cv::Vec3b MultiViewPixelColor(const std::vector<TextureKeyframe>& keyframes,
+                              const std::vector<double>& pose_weights,
+                              const Eigen::MatrixXi& triangles,
+                              int triangle,
+                              const Eigen::Vector3f& barycentric,
+                              double boundary_scale = 8.0) {
+  Eigen::Vector3d color = Eigen::Vector3d::Zero();
+  double total = 0.0;
+  for (std::size_t index = 0; index < keyframes.size(); ++index) {
+    if (pose_weights[index] <= 0.0) continue;
+    const TextureKeyframe& keyframe = keyframes[index];
+    const Eigen::Vector3d point = SurfacePoint(
+        keyframe.vertices, triangles, triangle, barycentric);
+    cv::Point2d source_pixel;
+    if (!IsSurfacePointVisible(keyframe, point, &source_pixel)) continue;
+    const double weight = SourceSampleWeight(
+        keyframe, pose_weights[index], triangle, source_pixel,
+        boundary_scale);
+    if (weight <= 1.0e-9) continue;
+    const cv::Vec3b sample = SampleBilinear(
+        keyframe.image, source_pixel.x, source_pixel.y);
+    color += weight * Eigen::Vector3d(sample[0], sample[1], sample[2]);
+    total += weight;
+  }
+  if (total <= 1.0e-9) {
+    return cv::Vec3b(0, 0, 0);
+  }
+  color /= total;
+  return cv::Vec3b(static_cast<unsigned char>(std::lround(color[0])),
+                   static_cast<unsigned char>(std::lround(color[1])),
+                   static_cast<unsigned char>(std::lround(color[2])));
+}
+
+Eigen::VectorXd BuildCanonicalUv(const Eigen::VectorXd& vertices) {
+  const int count = static_cast<int>(vertices.size() / 3);
+  Eigen::Vector2d minimum = Eigen::Vector2d::Constant(
+      std::numeric_limits<double>::max());
+  Eigen::Vector2d maximum = Eigen::Vector2d::Constant(
+      std::numeric_limits<double>::lowest());
+  for (int vertex = 0; vertex < count; ++vertex) {
+    const Eigen::Vector2d xy(vertices[3 * vertex], vertices[3 * vertex + 1]);
+    minimum = minimum.cwiseMin(xy);
+    maximum = maximum.cwiseMax(xy);
+  }
+  Eigen::VectorXd uv(2 * count);
+  constexpr double kPadding = 0.02;
+  for (int vertex = 0; vertex < count; ++vertex) {
+    const double u = (vertices[3 * vertex] - minimum.x()) /
+                     std::max(maximum.x() - minimum.x(), 1.0e-9);
+    const double v = (vertices[3 * vertex + 1] - minimum.y()) /
+                     std::max(maximum.y() - minimum.y(), 1.0e-9);
+    uv.segment<2>(2 * vertex) = Eigen::Vector2d(
+        kPadding + (1.0 - 2.0 * kPadding) * u,
+        1.0 - (kPadding + (1.0 - 2.0 * kPadding) * v));
+  }
+  return uv;
+}
+
+CanonicalTextureBank BuildCanonicalTextureBank(
+    const std::vector<TextureKeyframe>& keyframes,
+    const Eigen::VectorXd& reference_vertices,
+    const Eigen::MatrixXi& triangles, int atlas_size,
+    double boundary_scale) {
+  CanonicalTextureBank bank;
+  bank.vertex_uv = BuildCanonicalUv(reference_vertices);
+  std::vector<cv::Mat> layers(keyframes.size());
+  std::vector<cv::Mat> masks(keyframes.size());
+  std::vector<cv::Mat> quality(keyframes.size());
+  for (std::size_t i = 0; i < keyframes.size(); ++i) {
+    layers[i] = cv::Mat(atlas_size, atlas_size, CV_8UC3, cv::Scalar(0, 0, 0));
+    masks[i] = cv::Mat(atlas_size, atlas_size, CV_8UC1, cv::Scalar(0));
+    quality[i] = cv::Mat(atlas_size, atlas_size, CV_32FC1, cv::Scalar(0));
+  }
+  const int triangle_count = triangles.cols() == 3 ? triangles.rows()
+                                                    : triangles.cols();
+  for (int triangle = 0; triangle < triangle_count; ++triangle) {
+    std::array<Eigen::Vector2f, 3> uv;
+    for (int corner = 0; corner < 3; ++corner) {
+      const int vertex = TriangleIndex(triangles, triangle, corner);
+      uv[corner] = (bank.vertex_uv.segment<2>(2 * vertex) *
+                    (atlas_size - 1)).cast<float>();
+    }
+    const int min_x = std::max(0, static_cast<int>(std::floor(
+        std::min({uv[0].x(), uv[1].x(), uv[2].x()}))));
+    const int max_x = std::min(atlas_size - 1, static_cast<int>(std::ceil(
+        std::max({uv[0].x(), uv[1].x(), uv[2].x()}))));
+    const int min_y = std::max(0, static_cast<int>(std::floor(
+        std::min({uv[0].y(), uv[1].y(), uv[2].y()}))));
+    const int max_y = std::min(atlas_size - 1, static_cast<int>(std::ceil(
+        std::max({uv[0].y(), uv[1].y(), uv[2].y()}))));
+    for (int y = min_y; y <= max_y; ++y) {
+      for (int x = min_x; x <= max_x; ++x) {
+        Eigen::Vector3f barycentric;
+        if (!face_recon::ComputeBarycentricCoordinates(
+                Eigen::Vector2f(x + 0.5f, y + 0.5f), uv[0], uv[1], uv[2],
+                &barycentric) ||
+            barycentric.minCoeff() < -1.0e-5f) {
+          continue;
+        }
+        for (std::size_t i = 0; i < keyframes.size(); ++i) {
+          const Eigen::Vector3d point = SurfacePoint(
+              keyframes[i].vertices, triangles, triangle, barycentric);
+          cv::Point2d source_pixel;
+          if (!IsSurfacePointVisible(keyframes[i], point, &source_pixel)) {
+            continue;
+          }
+          const double weight = SourceSampleWeight(
+              keyframes[i], 1.0, triangle, source_pixel, boundary_scale);
+          if (weight <= 1.0e-6) continue;
+          layers[i].at<cv::Vec3b>(y, x) = SampleBilinear(
+              keyframes[i].image, source_pixel.x, source_pixel.y);
+          masks[i].at<unsigned char>(y, x) = 255;
+          quality[i].at<float>(y, x) = static_cast<float>(weight);
+        }
+      }
+    }
+  }
+
+  // Let graph cut choose low-contrast transitions in overlap regions.  The
+  // quality winner is used as the initial atlas and as a complete fallback.
+  bank.atlas = cv::Mat(atlas_size, atlas_size, CV_8UC3, cv::Scalar(0, 0, 0));
+  bank.valid_mask = cv::Mat(atlas_size, atlas_size, CV_8UC1, cv::Scalar(0));
+  for (int y = 0; y < atlas_size; ++y) {
+    for (int x = 0; x < atlas_size; ++x) {
+      float best = 0.0f;
+      double total = 0.0;
+      Eigen::Vector3d blended = Eigen::Vector3d::Zero();
+      for (std::size_t i = 0; i < keyframes.size(); ++i) {
+        const double blend_weight =
+            std::pow(quality[i].at<float>(y, x), 6.0);
+        if (blend_weight > 0.0) {
+          const cv::Vec3b sample = layers[i].at<cv::Vec3b>(y, x);
+          blended += blend_weight *
+                     Eigen::Vector3d(sample[0], sample[1], sample[2]);
+          total += blend_weight;
+        }
+        if (quality[i].at<float>(y, x) > best) {
+          best = quality[i].at<float>(y, x);
+          bank.valid_mask.at<unsigned char>(y, x) = 255;
+        }
+      }
+      if (total > 0.0) {
+        blended /= total;
+        bank.atlas.at<cv::Vec3b>(y, x) = cv::Vec3b(
+            cv::saturate_cast<unsigned char>(blended[0]),
+            cv::saturate_cast<unsigned char>(blended[1]),
+            cv::saturate_cast<unsigned char>(blended[2]));
+      }
+      // Graph cut may choose only among views whose geometric quality is
+      // close to the best source at this texel.  Without this unary-like
+      // restriction, color-only graph cut can splice a grazing eye or mouth
+      // into a frontal view simply because that boundary is low contrast.
+      constexpr float kCandidateFraction = 0.72f;
+      for (std::size_t i = 0; i < keyframes.size(); ++i) {
+        if (quality[i].at<float>(y, x) < kCandidateFraction * best) {
+          masks[i].at<unsigned char>(y, x) = 0;
+        }
+      }
+    }
+  }
+  std::vector<cv::UMat> float_layers;
+  std::vector<cv::UMat> seam_masks;
+  std::vector<cv::Point> corners(keyframes.size(), cv::Point(0, 0));
+  for (std::size_t i = 0; i < keyframes.size(); ++i) {
+    cv::Mat layer_float;
+    layers[i].convertTo(layer_float, CV_32FC3);
+    float_layers.push_back(layer_float.getUMat(cv::ACCESS_READ));
+    seam_masks.push_back(masks[i].getUMat(cv::ACCESS_RW));
+  }
+  if (keyframes.size() > 1) {
+    cv::detail::GraphCutSeamFinder seam_finder(
+        cv::detail::GraphCutSeamFinderBase::COST_COLOR_GRAD);
+    seam_finder.find(float_layers, corners, seam_masks);
+    for (std::size_t i = 0; i < keyframes.size(); ++i) {
+      seam_masks[i].copyTo(masks[i]);
+    }
+  }
+
+  cv::Mat cut_atlas = bank.atlas.clone();
+  for (int y = 0; y < atlas_size; ++y) {
+    for (int x = 0; x < atlas_size; ++x) {
+      float best = 0.0f;
+      for (std::size_t i = 0; i < keyframes.size(); ++i) {
+        if (masks[i].at<unsigned char>(y, x) != 0 &&
+            quality[i].at<float>(y, x) > best) {
+          best = quality[i].at<float>(y, x);
+          cut_atlas.at<cv::Vec3b>(y, x) = layers[i].at<cv::Vec3b>(y, x);
+        }
+      }
+    }
+  }
+
+  // One global Poisson solve uses the continuous ULR blend as its gradient
+  // field and the graph-cut composite as boundary conditions.  This avoids
+  // the block artifacts produced by cloning many disconnected source masks.
+  if (cv::countNonZero(bank.valid_mask) >= 16) {
+    const cv::Rect bounds = cv::boundingRect(bank.valid_mask);
+    cv::Mat poisson;
+    cv::seamlessClone(bank.atlas, cut_atlas, bank.valid_mask,
+                      cv::Point(bounds.x + bounds.width / 2,
+                                bounds.y + bounds.height / 2), poisson,
+                      cv::NORMAL_CLONE);
+    bank.atlas = poisson;
+  }
+  return bank;
+}
+
+cv::Vec3b CanonicalPixelColor(const CanonicalTextureBank& bank,
+                              const Eigen::MatrixXi& triangles,
+                              const face_recon::RasterPixel& pixel) {
+  Eigen::Vector2d uv = Eigen::Vector2d::Zero();
+  for (int corner = 0; corner < 3; ++corner) {
+    uv += static_cast<double>(pixel.barycentric[corner]) *
+          bank.vertex_uv.segment<2>(2 * TriangleIndex(
+              triangles, pixel.triangle_id, corner));
+  }
+  return SampleBilinear(bank.atlas, uv.x() * (bank.atlas.cols - 1),
+                        uv.y() * (bank.atlas.rows - 1));
+}
+
+// Blends the keyframe backgrounds for the current pose: each active view is
+// first rigidly warped from its own registered pose to the requested one via
+// the scalp proxy, so hair and the head silhouette line up before the
+// crossfade instead of ghosting.
+cv::Mat BlendKeyframeBackgrounds(
+    const std::vector<TextureKeyframe>& keyframes,
+    const std::vector<double>& weights,
+    const std::vector<Eigen::Vector3d>& head_proxy,
+    const face_recon::CameraParameters& current_camera) {
+  cv::Mat accumulated;
+  for (std::size_t index = 0; index < keyframes.size(); ++index) {
+    if (weights[index] <= 0.0) continue;
+    cv::Mat warped = WarpHeadBackground(keyframes[index].background,
+                                        head_proxy, keyframes[index].camera,
+                                        current_camera);
+    cv::Mat contribution;
+    warped.convertTo(contribution, CV_32FC3, weights[index]);
+    if (accumulated.empty()) {
+      accumulated = contribution;
+    } else {
+      accumulated += contribution;
+    }
+  }
+  cv::Mat blended;
+  accumulated.convertTo(blended, CV_8UC3);
+  return blended;
+}
+
 bool SaveGeometryConditions(
     const std::filesystem::path& root, const std::string& filename,
     const Eigen::MatrixXi& triangles,
     const face_recon::RasterizationResult& rasterization,
     const Eigen::VectorXd& vertices,
     const face_recon::CameraParameters& camera,
-    const Eigen::VectorXd& vertex_colors, const cv::Mat& target_texture,
-    const Eigen::VectorXd& texture_uv, bool use_projective_texture,
+    const std::function<cv::Vec3b(const face_recon::RasterPixel&)>&
+        pixel_color,
     const std::array<double, 4>& region_confidences) {
   const std::array<std::string, 5> directories = {
       "coarse_rgb", "depth", "normals", "visibility", "reliability"};
@@ -733,9 +1318,7 @@ bool SaveGeometryConditions(
     for (int x = 0; x < rasterization.width; ++x) {
       const auto& pixel = rasterization.at(x, y);
       if (!pixel.visible()) continue;
-      coarse.at<cv::Vec3b>(y, x) = use_projective_texture
-          ? ProjectivePixelColor(target_texture, texture_uv, triangles, pixel)
-          : ToBgr8(PixelColor(vertex_colors, triangles, pixel));
+      coarse.at<cv::Vec3b>(y, x) = pixel_color(pixel);
       Eigen::Vector3d normal = Eigen::Vector3d::Zero();
       for (int corner = 0; corner < 3; ++corner) {
         const int vertex =
@@ -844,6 +1427,30 @@ int main(int argc, char** argv) {
   app.add_flag("--head-warp", head_warp,
                "Warp hair/scalp/head silhouette along the transferred rigid "
                "motion using a scalp-ellipsoid proxy");
+  std::string keyframe_manifest_path;
+  std::string keyframe_trajectory_path;
+  double keyframe_sigma_degrees = 1.5;
+  int texture_atlas_size = 512;
+  double texture_boundary_scale = 8.0;
+  app.add_option("--keyframe-manifest", keyframe_manifest_path,
+                 "manifest.csv of registered target keyframes (frame,image,"
+                 "landmarks)")
+      ->check(CLI::ExistingFile);
+  app.add_option("--keyframe-trajectory", keyframe_trajectory_path,
+                 "tracking.csv from registering the keyframes with the "
+                 "target identity held fixed")
+      ->check(CLI::ExistingFile);
+  app.add_option("--keyframe-sigma", keyframe_sigma_degrees,
+                 "Softening radius in degrees added to yaw/pitch distance "
+                 "before inverse-square keyframe weighting")
+      ->check(CLI::PositiveNumber);
+  app.add_option("--texture-atlas-size", texture_atlas_size,
+                 "Resolution of the canonical UV texture bank")
+      ->check(CLI::Range(128, 4096));
+  app.add_option("--texture-boundary-scale", texture_boundary_scale,
+                 "Source-mask distance in pixels at which boundary weight "
+                 "saturates")
+      ->check(CLI::PositiveNumber);
   app.add_option("--pose-scale", pose_scale,
                  "Gain applied to source-relative head rotation/translation")
       ->check(CLI::NonNegativeNumber);
@@ -943,8 +1550,49 @@ int main(int argc, char** argv) {
                    "clean_background.png").string(),
                   background);
     }
+    if (keyframe_manifest_path.empty() != keyframe_trajectory_path.empty()) {
+      throw std::runtime_error(
+          "--keyframe-manifest and --keyframe-trajectory must be given "
+          "together");
+    }
+    std::vector<TextureKeyframe> keyframes;
+    if (!keyframe_manifest_path.empty()) {
+      keyframes = LoadTextureKeyframes(
+          keyframe_manifest_path, keyframe_trajectory_path, model, target,
+          photograph.cols, photograph.rows);
+      std::cout << "[KEYFRAMES] " << keyframes.size()
+                << " registered view(s), yaw/pitch span [";
+      double minimum_yaw = keyframes.front().yaw;
+      double maximum_yaw = keyframes.front().yaw;
+      double minimum_pitch = keyframes.front().pitch;
+      double maximum_pitch = keyframes.front().pitch;
+      for (const auto& keyframe : keyframes) {
+        minimum_yaw = std::min(minimum_yaw, keyframe.yaw);
+        maximum_yaw = std::max(maximum_yaw, keyframe.yaw);
+        minimum_pitch = std::min(minimum_pitch, keyframe.pitch);
+        maximum_pitch = std::max(maximum_pitch, keyframe.pitch);
+      }
+      std::cout << minimum_yaw << ", " << maximum_yaw << "] x ["
+                << minimum_pitch << ", " << maximum_pitch << "] rad\n";
+    }
+    CanonicalTextureBank texture_bank;
+    if (!keyframes.empty()) {
+      std::cout << "[TEXTURE] baking " << texture_atlas_size << "x"
+                << texture_atlas_size
+                << " canonical UV bank (Z-buffer + graph-cut + Poisson)\n";
+      texture_bank = BuildCanonicalTextureBank(
+          keyframes, target_reference_vertices, model.triangles(),
+          texture_atlas_size, texture_boundary_scale);
+      cv::imwrite((std::filesystem::path(output_dir) /
+                   "canonical_texture.png").string(), texture_bank.atlas);
+      cv::imwrite((std::filesystem::path(output_dir) /
+                   "canonical_texture_mask.png").string(),
+                  texture_bank.valid_mask);
+    }
+    const double keyframe_sigma =
+        keyframe_sigma_degrees * 3.14159265358979323846 / 180.0;
     std::vector<Eigen::Vector3d> head_proxy;
-    if (head_warp && transfer_pose) {
+    if ((head_warp || !keyframes.empty()) && transfer_pose) {
       head_proxy = BuildHeadProxyPoints(target_reference_vertices);
     } else if (head_warp) {
       std::cerr << "[WARNING] --head-warp does nothing without pose "
@@ -992,14 +1640,56 @@ int main(int argc, char** argv) {
       const face_recon::RasterizationResult rasterization =
           face_recon::RasterizeMesh(vertices, model.triangles(), frame_camera,
                                     photograph.cols, photograph.rows);
+      std::vector<double> keyframe_weights;
+      if (!keyframes.empty()) {
+        keyframe_weights =
+            KeyframeWeights(keyframes, frame_camera, keyframe_sigma);
+      }
+      const auto pixel_color =
+          [&](const face_recon::RasterPixel& pixel) -> cv::Vec3b {
+        if (!keyframes.empty()) {
+          Eigen::Vector2d uv = Eigen::Vector2d::Zero();
+          for (int corner = 0; corner < 3; ++corner) {
+            uv += static_cast<double>(pixel.barycentric[corner]) *
+                  texture_bank.vertex_uv.segment<2>(2 * TriangleIndex(
+                      model.triangles(), pixel.triangle_id, corner));
+          }
+          const double atlas_x = uv.x() * (texture_bank.atlas.cols - 1);
+          const double atlas_y = uv.y() * (texture_bank.atlas.rows - 1);
+          const int mask_x = std::clamp(
+              static_cast<int>(std::lround(atlas_x)), 0,
+              texture_bank.valid_mask.cols - 1);
+          const int mask_y = std::clamp(
+              static_cast<int>(std::lround(atlas_y)), 0,
+              texture_bank.valid_mask.rows - 1);
+          if (texture_bank.valid_mask.at<unsigned char>(mask_y, mask_x) > 0) {
+            return CanonicalPixelColor(texture_bank, model.triangles(),
+                                       pixel);
+          }
+          // UV holes use the dynamic ULR blend, still with exact per-pixel
+          // source Z-buffer visibility and the same joint quality weight.
+          const cv::Vec3b fallback = MultiViewPixelColor(
+              keyframes, keyframe_weights, model.triangles(),
+              pixel.triangle_id, pixel.barycentric,
+              texture_boundary_scale);
+          if (fallback != cv::Vec3b(0, 0, 0)) return fallback;
+        }
+        return use_projective_texture
+                   ? ProjectivePixelColor(photograph, texture_uv,
+                                          model.triangles(), pixel)
+                   : ToBgr8(PixelColor(vertex_colors, model.triangles(),
+                                       pixel));
+      };
       cv::Mat frame_background = background;
-      if (!head_proxy.empty()) {
+      if (!keyframes.empty() && transfer_pose) {
+        frame_background = BlendKeyframeBackgrounds(
+            keyframes, keyframe_weights, head_proxy, frame_camera);
+      } else if (head_warp && !head_proxy.empty()) {
         frame_background = WarpHeadBackground(background, head_proxy,
                                               target.camera, frame_camera);
       }
-      cv::Mat composite = CompositeFrame(
-          frame_background, photograph, texture_uv, model.triangles(),
-          rasterization, vertex_colors, use_projective_texture, feather);
+      cv::Mat composite = CompositeFrame(frame_background, pixel_color,
+                                         rasterization, feather);
       if (!disable_blink_correction && frame.has_eye_opening &&
           frames.front().has_eye_opening) {
         const double left_reference =
@@ -1025,7 +1715,7 @@ int main(int argc, char** argv) {
           !SaveGeometryConditions(
               std::filesystem::path(output_dir) / "conditions", name.str(),
               model.triangles(), rasterization, vertices, frame_camera,
-              vertex_colors, photograph, texture_uv, use_projective_texture,
+              pixel_color,
               {frame.left_eye_confidence, frame.right_eye_confidence,
                frame.mouth_confidence, frame.pose_confidence})) {
         throw std::runtime_error("Could not write geometry conditions for " +

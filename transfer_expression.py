@@ -90,6 +90,34 @@ def parse_args() -> argparse.Namespace:
         help="Warp hair/head silhouette along the transferred rigid motion",
     )
     parser.add_argument(
+        "--keyframe-manifest",
+        type=Path,
+        help="manifest.csv of registered target keyframes",
+    )
+    parser.add_argument(
+        "--keyframe-trajectory",
+        type=Path,
+        help="tracking.csv from registering the keyframes (fixed identity)",
+    )
+    parser.add_argument(
+        "--keyframe-sigma",
+        type=float,
+        default=1.5,
+        help="Softening radius in degrees for inverse-square keyframe weighting",
+    )
+    parser.add_argument(
+        "--texture-atlas-size",
+        type=int,
+        default=512,
+        help="Canonical UV texture-bank resolution",
+    )
+    parser.add_argument(
+        "--texture-boundary-scale",
+        type=float,
+        default=8.0,
+        help="Boundary-distance weight saturation in source pixels",
+    )
+    parser.add_argument(
         "--blink-scale",
         type=float,
         default=1.0,
@@ -145,6 +173,11 @@ def parse_args() -> argparse.Namespace:
         "--no-comparison",
         action="store_true",
         help="Skip the side-by-side source/result comparison video",
+    )
+    parser.add_argument(
+        "--landmark-video",
+        action="store_true",
+        help="Also render a video with the target's projected BFM landmarks",
     )
     return parser.parse_args()
 
@@ -294,6 +327,16 @@ def run_completion_backend(
 
 def main() -> int:
     args = parse_args()
+    if bool(args.keyframe_manifest) != bool(args.keyframe_trajectory):
+        raise ValueError(
+            "--keyframe-manifest and --keyframe-trajectory must be given together"
+        )
+    if args.keyframe_sigma <= 0:
+        raise ValueError("--keyframe-sigma must be positive")
+    if not 128 <= args.texture_atlas_size <= 4096:
+        raise ValueError("--texture-atlas-size must be in [128, 4096]")
+    if args.texture_boundary_scale <= 0:
+        raise ValueError("--texture-boundary-scale must be positive")
     target = args.target.expanduser().resolve()
     source = args.source.expanduser().resolve()
     if not target.exists():
@@ -346,6 +389,14 @@ def main() -> int:
         command.append("--no-uncertainty-control")
     if args.head_warp:
         command.append("--head-warp")
+    if args.keyframe_manifest and args.keyframe_trajectory:
+        command.extend([
+            "--keyframe-manifest", str(args.keyframe_manifest.expanduser().resolve()),
+            "--keyframe-trajectory", str(args.keyframe_trajectory.expanduser().resolve()),
+            "--keyframe-sigma", str(args.keyframe_sigma),
+            "--texture-atlas-size", str(args.texture_atlas_size),
+            "--texture-boundary-scale", str(args.texture_boundary_scale),
+        ])
     command.extend(["--blink-scale", str(args.blink_scale)])
     command.extend(["--eye-warp-gain", str(args.eye_warp_gain)])
     if args.save_conditions or args.completion_command:
@@ -368,6 +419,22 @@ def main() -> int:
     fps = args.fps or source_fps(tracking)
     result_video = output / "transfer.mp4"
     encode_video(encoded_frames, result_video, fps)
+    landmark_video = None
+    if args.landmark_video:
+        landmark_video = output / "landmarks.mp4"
+        run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "annotate_transfer_landmarks.py"),
+                str(output),
+                "--target-fitting", str(reconstruction / "fitting.txt"),
+                "--frames-dir", str(encoded_frames[0].parent),
+                "--model", str(args.model.expanduser().resolve()),
+                "--correspondences", str(args.correspondences.expanduser().resolve()),
+                "--output", str(landmark_video),
+                "--fps", str(fps),
+            ]
+        )
 
     comparison_video = None
     if not args.no_comparison:
@@ -392,6 +459,10 @@ def main() -> int:
                 "blink_correction": not args.no_blink_correction,
                 "uncertainty_control": not args.no_uncertainty_control,
                 "head_warp": args.head_warp,
+                "keyframe_manifest": str(args.keyframe_manifest) if args.keyframe_manifest else None,
+                "keyframe_sigma": args.keyframe_sigma if args.keyframe_manifest else None,
+                "texture_atlas_size": args.texture_atlas_size if args.keyframe_manifest else None,
+                "texture_boundary_scale": args.texture_boundary_scale if args.keyframe_manifest else None,
                 "blink_scale": args.blink_scale,
                 "eye_warp_gain": args.eye_warp_gain,
                 "background_inpaint": not args.no_background_inpaint,
@@ -399,6 +470,7 @@ def main() -> int:
                 "geometry_conditions": bool(args.save_conditions or args.completion_command),
                 "completion_backend": args.completion_command,
                 "result_video": result_video.name,
+                "landmark_video": landmark_video.name if landmark_video else None,
                 "comparison_video": comparison_video.name if comparison_video else None,
             },
             indent=2,
@@ -408,6 +480,8 @@ def main() -> int:
 
     print(f"\nExpression transfer complete: {output}")
     print(f"Result video: {result_video}")
+    if landmark_video:
+        print(f"Landmark video: {landmark_video}")
     if comparison_video:
         print(f"Side-by-side comparison: {comparison_video}")
     return 0

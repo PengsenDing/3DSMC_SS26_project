@@ -37,6 +37,7 @@ core.*
 # Python environments and caches
 # -----------------------------------------------------------------------------
 /.venv/
+/.venv-*/
 /venv/
 /env/
 /.cache/
@@ -73,10 +74,11 @@ Desktop.ini
 /models/*
 !/models/.gitkeep
 
-# Licensed/downloaded BFM containers are local. Keep the correspondence table
-# and the small example mesh in data/ tracked.
-/data/*.h5
-/data/*.hdf5
+# Downloaded datasets and licensed model containers are local. Keep only the
+# small BFM/MediaPipe correspondence table in data/ tracked.
+/data/*
+!/data/bfm_mediapipe_correspondence.csv
+!/data/README.md
 
 # -----------------------------------------------------------------------------
 # Local input images
@@ -93,7 +95,19 @@ Desktop.ini
 /reconstructions/*
 !/reconstructions/.gitkeep
 
+/sequences/*
+!/sequences/.gitkeep
+
+/transfers/*
+!/transfers/.gitkeep
+
+/evaluations/*
+!/evaluations/.gitkeep
+
 /tmp/
+
+# Local scratch copies and accidental Finder/Editor duplicates
+/transfer_expression 2.py
 
 # -----------------------------------------------------------------------------
 # Personal working notes

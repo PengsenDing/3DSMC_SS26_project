@@ -108,6 +108,11 @@ python transfer_expression.py reconstructions/target_3 sequences/talking \
   --output transfers/talking_to_target3
 ```
 
+Add `--landmark-video` to also write `landmarks.mp4`. Its green markers are
+the 40 semantic BFM vertices projected with the exact expression and camera
+used to render each target frame, so the overlay diagnoses the generated
+geometry rather than rerunning a detector on the result.
+
 Useful ablations are `--no-pose`, `--pose-only`,
 `--no-blink-correction`, `--blink-scale`, and `--expression-scale`. The
 tracker stores the observed and BFM-fitted opening of both eyes in
@@ -121,6 +126,66 @@ target photograph. This avoids the triangular moire produced when an
 under-constrained single view is represented by tens of thousands of
 independently fitted vertex colors. Use `--texture-mode vertex` only for the
 old fitted-PLY ablation.
+
+### Offline LivePortrait keyframes
+
+For larger rotations, LivePortrait is used only once to synthesize neutral
+target views. Generate a yaw × pitch grid, register it with the sequence tracker
+using the original target's `fitting.txt` as `--initial-fitting`, and retain
+the resulting manifest and trajectory:
+
+```bash
+/path/to/LivePortrait/.venv/bin/python scripts/liveportrait_keyframes.py \
+  reconstructions/target/keyframes/original.png \
+  --liveportrait-root /path/to/LivePortrait \
+  --yaws=-40,-25,-15,0,15,25,40 \
+  --pitches=-15,0,15 \
+  --output reconstructions/target/keyframes
+```
+
+The nominal LivePortrait slider angle is not used at runtime. The fitted
+camera in the registration trajectory supplies the actual pose. At transfer
+time, the four nearest registered views in fitted yaw × pitch space drive the
+background blend. Face texture is baked once into a canonical UV bank:
+each UV texel is reprojected into every source view and accepted only when its
+inverse depth agrees with that view's per-pixel Z-buffer. Accepted samples are
+weighted jointly by surface angle, projected resolution, and distance from an
+occlusion/silhouette boundary. A quality-constrained graph cut chooses stable
+source regions and one global Poisson solve removes their remaining color seam.
+The resulting `canonical_texture.png` and mask are saved in the transfer output.
+
+Color-normalize the registered images before rendering. This writes new
+images and a drop-in replacement manifest while leaving the originals intact:
+
+```bash
+python scripts/color_correct_keyframes.py \
+  reconstructions/target/keyframes/manifest.csv \
+  --output reconstructions/target/keyframes_corrected
+```
+
+Use the corrected manifest for multi-view transfer:
+
+```bash
+python transfer_expression.py reconstructions/target sequences/talking \
+  --keyframe-manifest reconstructions/target/keyframes_corrected/manifest.csv \
+  --keyframe-trajectory reconstructions/target/keyframes/tracking/tracking.csv \
+  --texture-atlas-size 1024 \
+  --texture-boundary-scale 8 \
+  --output transfers/talking_multiview
+```
+
+ArcFace evaluation is an optional, isolated environment because InsightFace
+has additional compiled dependencies. It reports per-keyframe cosine
+similarity plus mean/minimum summaries; these are continuous identity-drift
+metrics, not a universal pass/fail threshold:
+
+```bash
+python3.11 -m venv .venv-arcface
+.venv-arcface/bin/python -m pip install -r requirements-evaluation.txt
+.venv-arcface/bin/python scripts/evaluate_arcface_identity.py \
+  reconstructions/target/keyframes_corrected/manifest.csv \
+  --output evaluations/target_keyframes
+```
 
 Pass `--save-conditions` to export `coarse_rgb`, `depth`, `normals`, and
 `visibility` images for every frame. An optional learned renderer can be

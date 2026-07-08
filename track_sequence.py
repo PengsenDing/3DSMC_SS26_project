@@ -29,6 +29,14 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "data" / "bfm_mediapipe_correspondence.csv",
     )
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
+    parser.add_argument(
+        "--initial-fitting",
+        type=Path,
+        help=(
+            "Existing target fitting.txt used as the fixed identity; skips "
+            "first-frame reconstruction (useful for registered keyframes)"
+        ),
+    )
     parser.add_argument("--fps", type=float, help="Output FPS for image-directory inputs")
     parser.add_argument("--max-frames", type=int, help="Optional development/debug limit")
     parser.add_argument(
@@ -191,21 +199,29 @@ def main() -> int:
         writer.writerows(rows)
 
     initial_name = "initial_reconstruction"
-    reconstruction = [
-        sys.executable,
-        str(ROOT / "reconstruct.py"),
-        str(frames[0]),
-        "--name", initial_name,
-        "--output-root", str(output),
-        "--model", str(model),
-        "--correspondences", str(correspondences),
-        "--build-dir", str(args.build_dir.expanduser().resolve()),
-        "--photometric-stride", "4",
-        "--texture-stride", "4",
-    ]
-    if args.diagnostics:
-        reconstruction.append("--diagnostics")
-    run(reconstruction)
+    if args.initial_fitting:
+        initial_fitting = args.initial_fitting.expanduser().resolve()
+        if not initial_fitting.is_file():
+            raise FileNotFoundError(f"Initial fitting does not exist: {initial_fitting}")
+        initial_reconstruction = None
+    else:
+        reconstruction = [
+            sys.executable,
+            str(ROOT / "reconstruct.py"),
+            str(frames[0]),
+            "--name", initial_name,
+            "--output-root", str(output),
+            "--model", str(model),
+            "--correspondences", str(correspondences),
+            "--build-dir", str(args.build_dir.expanduser().resolve()),
+            "--photometric-stride", "4",
+            "--texture-stride", "4",
+        ]
+        if args.diagnostics:
+            reconstruction.append("--diagnostics")
+        run(reconstruction)
+        initial_fitting = output / initial_name / "fitting.txt"
+        initial_reconstruction = initial_name
 
     tracking_dir = output / "tracking"
     command = [
@@ -213,7 +229,7 @@ def main() -> int:
         "--model", str(model),
         "--correspondences", str(correspondences),
         "--manifest", str(manifest),
-        "--initial-fitting", str(output / initial_name / "fitting.txt"),
+        "--initial-fitting", str(initial_fitting),
         "--output", str(tracking_dir),
         "--pose-temporal-weight", str(args.pose_temporal_weight),
         "--expression-temporal-weight", str(args.expression_temporal_weight),
@@ -238,7 +254,8 @@ def main() -> int:
                 "input": str(source),
                 "frame_count": len(frames),
                 "fps": fps,
-                "initial_reconstruction": initial_name,
+                "initial_reconstruction": initial_reconstruction,
+                "initial_fitting": str(initial_fitting),
                 "trajectory": "tracking/tracking.csv",
                 "overlay_video": "tracking_overlay.mp4",
             },
