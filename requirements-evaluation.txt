@@ -1,0 +1,4 @@
+# Optional offline identity evaluation; keep this separate from the core
+# MediaPipe environment because InsightFace pins/builds additional packages.
+insightface==0.7.3
+onnxruntime>=1.16,<2

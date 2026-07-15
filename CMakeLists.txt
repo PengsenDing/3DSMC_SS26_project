@@ -77,13 +77,13 @@ endfunction()
 # Basel Face Model loader and inspection executable from week_2.
 add_library(
     bfm_model
-    face_recon/bfm_model.cc
-    face_recon/bfm_model.h
+    cpp/src/face_recon/bfm_model.cc
+    cpp/src/face_recon/bfm_model.h
 )
 target_include_directories(
     bfm_model
     PUBLIC
-        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/cpp/src"
         ${HDF5_INCLUDE_DIRS}
 )
 target_link_libraries(
@@ -98,29 +98,29 @@ face_reconstruction_enable_warnings(bfm_model)
 
 add_library(
     reconstruction_fitting
-    face_recon/dense_fitting.cc
-    face_recon/dense_fitting.h
-    face_recon/fitting.cc
-    face_recon/fitting.h
-    face_recon/image_fitting.cc
-    face_recon/image_fitting.h
-    face_recon/mesh_export.cc
-    face_recon/mesh_export.h
-    face_recon/photometric_fitting.cc
-    face_recon/photometric_fitting.h
-    face_recon/rasterizer.cc
-    face_recon/rasterizer.h
-    face_recon/silhouette_fitting.cc
-    face_recon/silhouette_fitting.h
-    face_recon/texture_fitting.cc
-    face_recon/texture_fitting.h
-    src/landmarks.cpp
+    cpp/src/face_recon/dense_fitting.cc
+    cpp/src/face_recon/dense_fitting.h
+    cpp/src/face_recon/fitting.cc
+    cpp/src/face_recon/fitting.h
+    cpp/src/face_recon/image_fitting.cc
+    cpp/src/face_recon/image_fitting.h
+    cpp/src/face_recon/mesh_export.cc
+    cpp/src/face_recon/mesh_export.h
+    cpp/src/face_recon/photometric_fitting.cc
+    cpp/src/face_recon/photometric_fitting.h
+    cpp/src/face_recon/rasterizer.cc
+    cpp/src/face_recon/rasterizer.h
+    cpp/src/face_recon/silhouette_fitting.cc
+    cpp/src/face_recon/silhouette_fitting.h
+    cpp/src/face_recon/texture_fitting.cc
+    cpp/src/face_recon/texture_fitting.h
+    cpp/src/landmarks.cpp
 )
 target_include_directories(
     reconstruction_fitting
     PUBLIC
-        "${PROJECT_SOURCE_DIR}"
-        "${PROJECT_SOURCE_DIR}/include"
+        "${PROJECT_SOURCE_DIR}/cpp/src"
+        "${PROJECT_SOURCE_DIR}/cpp/include"
 )
 target_link_libraries(
     reconstruction_fitting
@@ -132,7 +132,7 @@ target_link_libraries(
 )
 face_reconstruction_enable_warnings(reconstruction_fitting)
 
-add_executable(face_reconstruction face_recon/main.cc)
+add_executable(face_reconstruction cpp/apps/face_reconstruction.cc)
 target_link_libraries(
     face_reconstruction
     PRIVATE
@@ -141,33 +141,51 @@ target_link_libraries(
 )
 face_reconstruction_enable_warnings(face_reconstruction)
 
+add_executable(face_sequence_tracker cpp/apps/face_sequence_tracker.cc)
+target_link_libraries(
+    face_sequence_tracker
+    PRIVATE
+        reconstruction_fitting
+        CLI11::CLI11
+)
+face_reconstruction_enable_warnings(face_sequence_tracker)
+
+add_executable(face_expression_transfer cpp/apps/face_expression_transfer.cc)
+target_link_libraries(
+    face_expression_transfer
+    PRIVATE
+        reconstruction_fitting
+        CLI11::CLI11
+)
+face_reconstruction_enable_warnings(face_expression_transfer)
+
 if(BUILD_TESTING)
-    add_executable(fitting_test tests/fitting_test.cpp)
+    add_executable(fitting_test tests/cpp/fitting_test.cpp)
     target_link_libraries(fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(fitting_test)
     add_test(NAME fitting_test COMMAND fitting_test)
 
-    add_executable(rasterizer_test tests/rasterizer_test.cpp)
+    add_executable(rasterizer_test tests/cpp/rasterizer_test.cpp)
     target_link_libraries(rasterizer_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(rasterizer_test)
     add_test(NAME rasterizer_test COMMAND rasterizer_test)
 
-    add_executable(photometric_fitting_test tests/photometric_fitting_test.cpp)
+    add_executable(photometric_fitting_test tests/cpp/photometric_fitting_test.cpp)
     target_link_libraries(photometric_fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(photometric_fitting_test)
     add_test(NAME photometric_fitting_test COMMAND photometric_fitting_test)
 
-    add_executable(texture_fitting_test tests/texture_fitting_test.cpp)
+    add_executable(texture_fitting_test tests/cpp/texture_fitting_test.cpp)
     target_link_libraries(texture_fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(texture_fitting_test)
     add_test(NAME texture_fitting_test COMMAND texture_fitting_test)
 
-    add_executable(silhouette_fitting_test tests/silhouette_fitting_test.cpp)
+    add_executable(silhouette_fitting_test tests/cpp/silhouette_fitting_test.cpp)
     target_link_libraries(silhouette_fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(silhouette_fitting_test)
     add_test(NAME silhouette_fitting_test COMMAND silhouette_fitting_test)
 
-    add_executable(dense_fitting_test tests/dense_fitting_test.cpp)
+    add_executable(dense_fitting_test tests/cpp/dense_fitting_test.cpp)
     target_link_libraries(dense_fitting_test PRIVATE reconstruction_fitting)
     face_reconstruction_enable_warnings(dense_fitting_test)
     add_test(NAME dense_fitting_test COMMAND dense_fitting_test)
