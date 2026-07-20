@@ -70,6 +70,7 @@ python apps/transfer_expression.py \
   <path-to-image> \
   <path-to-video> \
   --output <output-path>
+  --no pose
 ```
 
 ## Outputs
