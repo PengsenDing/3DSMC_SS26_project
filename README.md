@@ -57,7 +57,7 @@ docs/                         Setup and pipeline notes
 Single-image reconstruction:
 
 ```bash
-python apps/reconstruct.py assets/inputs/face.jpg
+python apps/reconstruct.py assets/inputs/<image-name>
 ```
 
 Output is written to `outputs/reconstructions/<image-name>/`.
@@ -65,8 +65,8 @@ Output is written to `outputs/reconstructions/<image-name>/`.
 Track a source video:
 
 ```bash
-python apps/track_sequence.py assets/inputs/talking.mp4 \
-  --output outputs/sequences/talking
+python apps/track_sequence.py assets/inputs/<video-name> \
+  --output outputs/sequences/<video-name>
 ```
 
 Transfer expression from a tracked sequence to a reconstructed target:
@@ -74,8 +74,8 @@ Transfer expression from a tracked sequence to a reconstructed target:
 ```bash
 python apps/transfer_expression.py \
   outputs/reconstructions/target \
-  outputs/sequences/talking \
-  --output outputs/transfers/talking_to_target
+  outputs/sequences/<video-name> \
+  --output outputs/transfers/video_to_target
 ```
 
 ## Outputs
