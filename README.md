@@ -62,20 +62,14 @@ python apps/reconstruct.py assets/inputs/<image-name>
 
 Output is written to `outputs/reconstructions/<image-name>/`.
 
-Track a source video:
-
-```bash
-python apps/track_sequence.py assets/inputs/<video-name> \
-  --output outputs/sequences/<video-name>
-```
 
 Transfer expression from a tracked sequence to a reconstructed target:
 
 ```bash
 python apps/transfer_expression.py \
-  outputs/reconstructions/target \
-  outputs/sequences/<video-name> \
-  --output outputs/transfers/video_to_target
+  <path-to-image> \
+  <path-to-video> \
+  --output <output-path>
 ```
 
 ## Outputs
