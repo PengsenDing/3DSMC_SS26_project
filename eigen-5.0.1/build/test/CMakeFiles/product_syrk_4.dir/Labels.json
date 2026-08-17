@@ -1,0 +1,16 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/eigen-5.0.1/test/product_syrk.cpp"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"BuildOfficial"
+		],
+		"name" : "product_syrk_4"
+	}
+}

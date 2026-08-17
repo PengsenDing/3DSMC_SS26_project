@@ -1,0 +1,16 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/dingpengsen/Desktop/IN2354 3DSMC/Exercises/eigen-5.0.1/unsupported/test/cxx11_tensor_block_eval.cpp"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"BuildUnsupported"
+		],
+		"name" : "cxx11_tensor_block_eval_3"
+	}
+}
